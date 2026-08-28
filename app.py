@@ -10,7 +10,7 @@ st.set_page_config(page_title="BTR/USDT 12h LRC Scanner", layout="wide")
 st.title("🚀 BTR/USDT Dual LRC (300/301) Kesişim Tarayıcısı")
 
 DEFAULT_TOKEN = "8770184809:AAHskJ8stv-BfC9DVHuKKX-ooekSf5zskV4"
-DEFAULT_CHAT_ID = "-5289302469"
+DEFAULT_CHAT_ID = "-1005289302469"
 
 st.sidebar.header("⚙️ Tarama & Telegram Ayarları")
 telegram_token = st.sidebar.text_input("Telegram Bot Token", value=DEFAULT_TOKEN, type="password")
