@@ -30,38 +30,71 @@ def send_telegram_photo(bot_token, chat_id, image_bytes, caption):
     except Exception as e:
         st.error(f"Telegram hatası: {e}")
 
+# TradingView Çoklu Bant Hesaplaması (1.0 SD ve 2.0 SD)
 def calc_lrc(series, length):
     if len(series) < length:
-        return None, None, None
+        return None, None, None, None, None
     y = series.tail(length).values
     x = np.arange(length)
     slope, intercept = np.polyfit(x, y, 1)
     reg_line = intercept + slope * x
     std_dev = np.std(y - reg_line)
     
-    upper_band = reg_line + (std_dev * 2)
-    lower_band = reg_line - (std_dev * 2)
+    up2 = reg_line + (std_dev * 2.0)
+    up1 = reg_line + (std_dev * 1.0)
+    low1 = reg_line - (std_dev * 1.0)
+    low2 = reg_line - (std_dev * 2.0)
     
-    return reg_line, upper_band, lower_band
+    return reg_line, up2, up1, low1, low2
 
+# TradingView Siyah Arka Plan & Noktalı Çizgi Stili
 def generate_chart(df, symbol, ratio_series, length, cross_type):
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(ratio_series.index[-100:], ratio_series.tail(100), label=f'{symbol}', color='blue')
+    plt.style.use('dark_background')
+    fig, ax = plt.subplots(figsize=(10, 6), facecolor='black')
+    ax.set_facecolor('black')
     
-    reg, upper, lower = calc_lrc(ratio_series, length)
+    df_plot = df.tail(100).copy().reset_index(drop=True)
+    
+    # Mum Grafiği (Yeşil/Kırmızı)
+    for i, row in df_plot.iterrows():
+        color = '#00FF7F' if row['close'] >= row['open'] else '#FF3333'
+        ax.plot([i, i], [row['open'], row['close']], color=color, linewidth=3)
+        ax.plot([i, i], [row['low'], row['high']], color=color, linewidth=1)
+
+    # 5 Bantlı LRC Çizimi (Artı / Noktalı Stilde)
+    reg, up2, up1, low1, low2 = calc_lrc(ratio_series, length)
     if reg is not None:
-        idx = ratio_series.index[-length:]
-        ax.plot(idx, reg, 'r--', label='Orta Kanal')
-        ax.plot(idx, upper, 'g--', label='Üst Bant (Short)')
-        ax.plot(idx, lower, 'g--', label='Alt Bant (Long)')
+        idx_start = max(0, len(df_plot) - length)
+        x_axis = np.arange(idx_start, len(df_plot))
+        
+        offset = len(x_axis)
+        reg_sub = reg[-offset:]
+        up2_sub = up2[-offset:]
+        up1_sub = up1[-offset:]
+        low1_sub = low1[-offset:]
+        low2_sub = low2[-offset:]
+
+        # Ekran görüntüsündeki görsel renk paleti
+        ax.plot(x_axis, up2_sub, color='#00FF00', linestyle='None', marker='+', markersize=4, label='Upper 2.0')
+        ax.plot(x_axis, up1_sub, color='#0088FF', linestyle='None', marker='+', markersize=4, label='Upper 1.0')
+        ax.plot(x_axis, reg_sub, color='#FF0044', linestyle='None', marker='+', markersize=4, label='Middle')
+        ax.plot(x_axis, low1_sub, color='#AA00FF', linestyle='None', marker='+', markersize=4, label='Lower 1.0')
+        ax.plot(x_axis, low2_sub, color='#00FF00', linestyle='None', marker='+', markersize=4, label='Lower 2.0')
+
+    ax.set_title(f"{symbol} - {cross_type} (12h)", fontsize=11, fontweight='bold', color='white')
+    ax.grid(False)
     
-    ax.set_title(f"{symbol} - {cross_type} Grafiği ({timeframe})")
-    ax.legend()
-    plt.xticks(rotation=45)
+    step = max(1, len(df_plot) // 6)
+    ticks = np.arange(0, len(df_plot), step)
+    labels = [df_plot['timestamp'].iloc[t].strftime('%d %b') for t in ticks]
+    ax.set_xticks(ticks)
+    ax.set_xticklabels(labels, color='white', fontsize=9)
+    ax.tick_params(colors='white')
+
     plt.tight_layout()
     
     buf = io.BytesIO()
-    plt.savefig(buf, format='png')
+    plt.savefig(buf, format='png', dpi=150, facecolor='black', edgecolor='none')
     buf.seek(0)
     plt.close(fig)
     return buf.getvalue()
@@ -79,9 +112,13 @@ def fetch_btr_gecko():
         df = pd.DataFrame(prices, columns=['timestamp', 'close'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         
-        # 12 Saatlik periyoda resampling (Yeniden örnekleme)
+        # Mum çizimi için Open, High, Low türetme
+        df['open'] = df['close'].shift(1).fillna(df['close'])
+        df['high'] = df[['open', 'close']].max(axis=1)
+        df['low'] = df[['open', 'close']].min(axis=1)
+        
         df.set_index('timestamp', inplace=True)
-        df_12h = df['close'].resample('12h').last().dropna().reset_index()
+        df_12h = df.resample('12h').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'}).dropna().reset_index()
         
         return df_12h
     else:
@@ -104,25 +141,39 @@ if st.button("🔥 BTR/USDT Taramasını Başlat"):
 
         ratio = df['close']
         
-        reg300, up300, low300 = calc_lrc(ratio, calc_len_300)
-        reg301, up301, low301 = calc_lrc(ratio, calc_len_301)
+        reg300, up2_300, up1_300, low1_300, low2_300 = calc_lrc(ratio, calc_len_300)
+        reg301, up2_301, up1_301, low1_301, low2_301 = calc_lrc(ratio, calc_len_301)
         
-        if up300 is not None and up301 is not None:
-            hit_300_upper = any(ratio.iloc[-j] >= up300[-j] for j in range(1, min(lookback_bars + 1, len(up300))))
-            hit_300_lower = any(ratio.iloc[-j] <= low300[-j] for j in range(1, min(lookback_bars + 1, len(low300))))
+        if up2_300 is not None and up2_301 is not None:
+            # 300/300 Kesişim Kontrolü
+            hit_300_upper = any(ratio.iloc[-j] >= up2_300[-j] for j in range(1, min(lookback_bars + 1, len(up2_300))))
+            hit_300_lower = any(ratio.iloc[-j] <= low2_300[-j] for j in range(1, min(lookback_bars + 1, len(low2_300))))
             
-            hit_301_upper = any(ratio.iloc[-j] >= up301[-j] for j in range(1, min(lookback_bars + 1, len(up301))))
-            hit_301_lower = any(ratio.iloc[-j] <= low301[-j] for j in range(1, min(lookback_bars + 1, len(low301))))
+            # 301/301 Kesişim Kontrolü
+            hit_301_upper = any(ratio.iloc[-j] >= up2_301[-j] for j in range(1, min(lookback_bars + 1, len(up2_301))))
+            hit_301_lower = any(ratio.iloc[-j] <= low2_301[-j] for j in range(1, min(lookback_bars + 1, len(low2_301))))
             
-            status = []
-            if hit_300_upper or hit_300_lower: status.append("300/300")
-            if hit_301_upper or hit_301_lower: status.append("301/301")
+            has_300 = hit_300_upper or hit_300_lower
+            has_301 = hit_301_upper or hit_301_lower
             
-            last_price = ratio.iloc[-1]
-            
-            if status:
-                channel_str = " & ".join(status)
-                signal_type = "ÜST BANT KESİŞİMİ (Short)" if (hit_300_upper or hit_301_upper) else "ALT BANT KESİŞİMİ (Long)"
+            if has_300 or has_301:
+                # 300/300 vs 301/301 Ayrımı
+                if has_300 and has_301:
+                    channel_str = "300/300 & 301/301 (ÇİFT KESİŞİM)"
+                    used_len = calc_len_300
+                elif has_300:
+                    channel_str = "300/300"
+                    used_len = calc_len_300
+                else:
+                    channel_str = "301/301"
+                    used_len = calc_len_301
+
+                if (hit_300_upper or hit_301_upper):
+                    signal_type = "ÜST BANT KESİŞİMİ (Short)"
+                else:
+                    signal_type = "ALT BANT KESİŞİMİ (Long)"
+                
+                last_price = ratio.iloc[-1]
                 
                 results.append({
                     "Sembol": "BTRUSDT",
@@ -131,7 +182,6 @@ if st.button("🔥 BTR/USDT Taramasını Başlat"):
                     "Son Fiyat": f"{last_price:.4f}"
                 })
                 
-                used_len = calc_len_300 if "300/300" in status else calc_len_301
                 img_bytes = generate_chart(df, "BTR/USDT", ratio, used_len, f"{channel_str} - {signal_type}")
                 
                 caption = (
@@ -146,8 +196,9 @@ if st.button("🔥 BTR/USDT Taramasını Başlat"):
                 st.success("Kesişim Yakalandı!")
                 st.table(pd.DataFrame(results))
             else:
-                st.write(f"BTR/USDT 12h periyodunda son {lookback_bars} barda 300 veya 301 kanallarına kesişim tespit edilmedi.")
-                st.write(f"Son Fiyat: {last_price:.4f} | 300 Üst Bant: {up300[-1]:.4f} | 300 Alt Bant: {low300[-1]:.4f}")
+                last_price = ratio.iloc[-1]
+                st.write(f"BTR/USDT 12h periyodunda son {lookback_bars} barda 300/300 veya 301/301 kanallarına kesişim tespit edilmedi.")
+                st.write(f"Son Fiyat: {last_price:.4f} | 300 Üst Bant: {up2_300[-1]:.4f} | 300 Alt Bant: {low2_300[-1]:.4f}")
 
     except Exception as e:
         st.error(f"Hata oluştu: {e}")
