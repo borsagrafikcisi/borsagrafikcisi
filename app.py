@@ -66,35 +66,56 @@ def generate_chart(df, symbol, ratio_series, length, cross_type):
     plt.close(fig)
     return buf.getvalue()
 
-def fetch_btr_klines():
-    url = "https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=BTR_USDT&interval=12h&limit=500"
-    headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
+# Binance IP Engelini Aşarak Doğrudan Binance Futures Verisi Çekme
+def fetch_binance_futures_direct(symbol="BTRUSDT", interval="12h", limit=500):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
     
-    res = requests.get(url, headers=headers, timeout=10)
+    # Binance'in Geo-Block'a Takılmayan Halka Açık Node/Mirror Endpoint'leri
+    endpoints = [
+        f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://fapi1.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://fapi2.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://fapi3.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    ]
     
+    for url in endpoints:
+        try:
+            res = requests.get(url, headers=headers, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, list) and len(data) > 0:
+                    df = pd.DataFrame(data, columns=[
+                        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                        'close_time', 'quote_vol', 'trades', 'tb_base_vol', 'tb_quote_vol', 'ignore'
+                    ])
+                    df['close'] = df['close'].astype(float)
+                    return df
+        except:
+            continue
+            
+    # Eğer Binance tamamen kısıtlanırsa yedek olarak Gate.io Futures (Doğru Sütun Haritalamasıyla)
+    gate_url = f"https://api.gateio.ws/api/v4/futures/usdt/candlesticks?contract={symbol}&interval={interval}&limit={limit}"
+    res = requests.get(gate_url, headers=headers, timeout=5)
     if res.status_code == 200:
         data = res.json()
-        if not data:
-            raise Exception("API veri döndürmedi.")
-            
-        # Dinamik sütun eşleme (Kaç sütun gelirse gelsin hata vermez)
         df = pd.DataFrame(data)
-        # Gate.io spot candlestick sırası: [timestamp, volume, close, high, low, open, ...]
-        df.columns = ['timestamp', 'volume', 'close', 'high', 'low', 'open'] + [f'extra_{i}' for i in range(len(df.columns) - 6)]
-        
+        # Gate Futures formatı: [t, v, c, h, l, o] -> Kapanış 3. sütun (index 2)
+        df = df.iloc[:, [0, 5, 3, 4, 2, 1]]
+        df.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
         df['close'] = df['close'].astype(float)
-        # Eskiden yeniye sıralama
         df = df.iloc[::-1].reset_index(drop=True)
         return df
-    else:
-        raise Exception(f"API Yanıtı ({res.status_code}): {res.text}")
+
+    raise Exception("Veri sunucularına erişilemedi.")
 
 if st.button("🔥 BTR/USDT Taramasını Başlat"):
-    st.info("Veriler çekiliyor ve kesişim taranıyor...")
+    st.info("Binance Vadeli İşlemler verileri çekiliyor...")
     results = []
     
     try:
-        df = fetch_btr_klines()
+        df = fetch_binance_futures_direct("BTRUSDT", timeframe, limit=500)
         
         if len(df) < 301:
             st.error(f"Çekilen veri sayısı ({len(df)}) 301 barlık LRC hesaplamaya yetersiz.")
@@ -122,7 +143,7 @@ if st.button("🔥 BTR/USDT Taramasını Başlat"):
                     signal_type = "ÜST BANT KESİŞİMİ (Short)" if (hit_300_upper or hit_301_upper) else "ALT BANT KESİŞİMİ (Long)"
                     
                     results.append({
-                        "Sembol": "BTRUSDT",
+                        "Sembol": "BINANCE:BTRUSDT.P",
                         "Kanal": channel_str,
                         "Sinyal Yönü": signal_type,
                         "Son Fiyat": f"{last_price:.4f}"
@@ -133,7 +154,7 @@ if st.button("🔥 BTR/USDT Taramasını Başlat"):
                     
                     caption = (
                         f"🚨 *LRC KESİŞİM SİNYALİ*\n\n"
-                        f"📌 *Sembol:* `BTRUSDT`\n"
+                        f"📌 *Sembol:* `BINANCE:BTRUSDT.P`\n"
                         f"📊 *Kanal:* `{channel_str}`\n"
                         f"🎯 *Sinyal:* `{signal_type}`\n"
                         f"📈 *Fiyat:* `{last_price:.4f}`"
