@@ -10,20 +10,16 @@ st.set_page_config(page_title="BTR/USDT 12h LRC Scanner", layout="wide")
 
 st.title("🚀 BTR/USDT Dual LRC (300/301) Kesişim Tarayıcısı")
 
-# Telegram Bilgileri (Sabitlendi)
 DEFAULT_TOKEN = "8770184809:AAHskJ8stv-BfC9DVHuKKX-ooekSf5zskV4"
 DEFAULT_CHAT_ID = "1276919986"
 
-# Sidebar Ayarları
 st.sidebar.header("⚙️ Tarama & Telegram Ayarları")
 telegram_token = st.sidebar.text_input("Telegram Bot Token", value=DEFAULT_TOKEN, type="password")
 telegram_chat_id = st.sidebar.text_input("Telegram Chat ID", value=DEFAULT_CHAT_ID)
 
-# Slider hatası düzeltildi (min, max ve varsayılan değerler eklendi)
 lookback_bars = st.sidebar.slider("Kesişim Kontrolü (Son Kaç Bar?)", min_value=1, max_value=100, value=35)
 timeframe = st.sidebar.selectbox("Periyot", ["12h"], index=0)
 
-# Telegram Fotoğraf Gönderme Fonksiyonu
 def send_telegram_photo(bot_token, chat_id, image_bytes, caption):
     if not bot_token or not chat_id:
         return
@@ -35,7 +31,6 @@ def send_telegram_photo(bot_token, chat_id, image_bytes, caption):
     except Exception as e:
         st.error(f"Telegram hatası: {e}")
 
-# Linear Regression Channel (LRC) Hesaplama
 def calc_lrc(series, length):
     if len(series) < length:
         return None, None, None
@@ -50,7 +45,6 @@ def calc_lrc(series, length):
     
     return reg_line, upper_band, lower_band
 
-# Grafik Oluşturma
 def generate_chart(df, symbol, ratio_series, length, cross_type):
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(ratio_series.index[-100:], ratio_series.tail(100), label=f'{symbol}', color='blue')
@@ -73,25 +67,41 @@ def generate_chart(df, symbol, ratio_series, length, cross_type):
     plt.close(fig)
     return buf.getvalue()
 
-# Test Coin
-FUTURES_COINS = ['BTR/USDT']
-
-# Tarama Butonu
-if st.button("🔥 BTR/USDT Taramasını Başlat"):
-    st.info("Binance Futures verileri çekiliyor...")
+# Direct API Fetch (Geo-Block Aşma)
+def fetch_binance_futures_klines(symbol, interval, limit=500):
+    clean_symbol = symbol.replace('/', '').replace(':USDT', '')
+    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={clean_symbol}&interval={interval}&limit={limit}"
     
-    exchange = ccxt.binance({'options': {'defaultType': 'future'}})
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    res = requests.get(url, headers=headers, timeout=10)
+    if res.status_code != 200:
+        raise Exception(f"Binance API Yanıtı: {res.status_code} - {res.text}")
+        
+    data = res.json()
+    df = pd.DataFrame(data, columns=[
+        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'quote_vol', 'trades', 'tb_base_vol', 'tb_quote_vol', 'ignore'
+    ])
+    df['close'] = df['close'].astype(float)
+    return df
+
+FUTURES_COINS = ['BTRUSDT']
+
+if st.button("🔥 BTR/USDT Taramasını Başlat"):
+    st.info("Binance Futures verileri doğrudan API üzerinden çekiliyor...")
     results = []
     
     for sym in FUTURES_COINS:
         try:
-            ohlcv = exchange.fetch_ohlcv(sym, timeframe=timeframe, limit=500)
+            df = fetch_binance_futures_klines(sym, timeframe, limit=500)
             
-            if len(ohlcv) < 301:
-                st.error(f"{sym} için çekilen veri sayısı ({len(ohlcv)}) 301 barlık LRC hesaplamaya yetersiz.")
+            if len(df) < 301:
+                st.error(f"{sym} için çekilen veri sayısı ({len(df)}) 301 barlık LRC hesaplamaya yetersiz.")
                 continue
                 
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             ratio = df['close']
             
             reg300, up300, low300 = calc_lrc(ratio, 300)
