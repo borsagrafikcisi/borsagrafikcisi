@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import ccxt
 import matplotlib.pyplot as plt
 import requests
 import io
@@ -67,19 +66,19 @@ def generate_chart(df, symbol, ratio_series, length, cross_type):
     plt.close(fig)
     return buf.getvalue()
 
-# Direct API Fetch (Geo-Block Aşma)
-def fetch_binance_futures_klines(symbol, interval, limit=500):
-    clean_symbol = symbol.replace('/', '').replace(':USDT', '')
-    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={clean_symbol}&interval={interval}&limit={limit}"
+# Geo-block aşımı için CORS Proxy üzerinden Binance API sorgusu
+def fetch_klines_via_proxy(symbol, interval, limit=500):
+    target_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    proxy_url = f"https://api.allorigins.win/raw?url={requests.utils.quote(target_url)}"
     
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
-    
-    res = requests.get(url, headers=headers, timeout=10)
+    res = requests.get(proxy_url, timeout=15)
     if res.status_code != 200:
-        raise Exception(f"Binance API Yanıtı: {res.status_code} - {res.text}")
-        
+        # Alternatif fallback proxy
+        alt_proxy = f"https://corsproxy.io/?{requests.utils.quote(target_url)}"
+        res = requests.get(alt_proxy, timeout=15)
+        if res.status_code != 200:
+            raise Exception(f"API Yanıtı: {res.status_code} - {res.text}")
+            
     data = res.json()
     df = pd.DataFrame(data, columns=[
         'timestamp', 'open', 'high', 'low', 'close', 'volume',
@@ -91,12 +90,12 @@ def fetch_binance_futures_klines(symbol, interval, limit=500):
 FUTURES_COINS = ['BTRUSDT']
 
 if st.button("🔥 BTR/USDT Taramasını Başlat"):
-    st.info("Binance Futures verileri doğrudan API üzerinden çekiliyor...")
+    st.info("Bölgesel engel aşılıyor, Binance verileri çekiliyor...")
     results = []
     
     for sym in FUTURES_COINS:
         try:
-            df = fetch_binance_futures_klines(sym, timeframe, limit=500)
+            df = fetch_klines_via_proxy(sym, timeframe, limit=500)
             
             if len(df) < 301:
                 st.error(f"{sym} için çekilen veri sayısı ({len(df)}) 301 barlık LRC hesaplamaya yetersiz.")
