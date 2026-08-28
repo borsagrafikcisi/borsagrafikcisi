@@ -10,7 +10,7 @@ st.set_page_config(page_title="BTR/USDT 12h LRC Scanner", layout="wide")
 st.title("🚀 BTR/USDT Dual LRC (300/301) Kesişim Tarayıcısı")
 
 DEFAULT_TOKEN = "8770184809:AAHskJ8stv-BfC9DVHuKKX-ooekSf5zskV4"
-DEFAULT_CHAT_ID = "-5289302469⁠"
+DEFAULT_CHAT_ID = "-1005289302469⁠"
 
 st.sidebar.header("⚙️ Tarama & Telegram Ayarları")
 telegram_token = st.sidebar.text_input("Telegram Bot Token", value=DEFAULT_TOKEN, type="password")
@@ -21,20 +21,14 @@ timeframe = st.sidebar.selectbox("Periyot", ["12h"], index=0)
 
 def send_telegram_photo(bot_token, chat_id, image_bytes, caption):
     if not bot_token or not chat_id:
-        st.error("Telegram Token veya Chat ID eksik!")
         return
     url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
     files = {'photo': ('chart.png', image_bytes, 'image/png')}
     data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown'}
     try:
-        res = requests.post(url, data=data, files=files)
-        if res.status_code != 200:
-            st.error(f"Telegram Gönderim Hatası ({res.status_code}): {res.text}")
-        else:
-            st.success("Telegram mesajı başarıyla gönderildi!")
+        requests.post(url, data=data, files=files)
     except Exception as e:
-        st.error(f"Telegram bağlantı hatası: {e}")
-
+        st.error(f"Telegram hatası: {e}")
 
 def calc_lrc(series, length):
     if len(series) < length:
