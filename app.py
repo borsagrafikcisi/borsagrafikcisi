@@ -66,102 +66,85 @@ def generate_chart(df, symbol, ratio_series, length, cross_type):
     plt.close(fig)
     return buf.getvalue()
 
-# Güvenli ve Geo-block engelini aşan Binance Klines Veri Çekme Fonksiyonu
-def fetch_klines_robust(symbol, interval, limit=500):
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
+# Geo-block engeli olmayan Gate.io Public API üzerinden BTR/USDT verisi çekme
+def fetch_btr_klines():
+    # Gate.io 12h periyot için '12h' kullanır
+    url = "https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=BTR_USDT&interval=12h&limit=500"
+    headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
     
-    endpoints = [
-        f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}",
-        f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    ]
-    
-    last_err = None
-    for url in endpoints:
-        try:
-            res = requests.get(url, headers=headers, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                if isinstance(data, list) and len(data) > 0:
-                    df = pd.DataFrame(data, columns=[
-                        'timestamp', 'open', 'high', 'low', 'close', 'volume',
-                        'close_time', 'quote_vol', 'trades', 'tb_base_vol', 'tb_quote_vol', 'ignore'
-                    ])
-                    df['close'] = df['close'].astype(float)
-                    return df
-        except Exception as e:
-            last_err = e
-            continue
-            
-    raise Exception(f"Veri çekilemedi. Son hata: {last_err}")
-
-FUTURES_COINS = ['BTRUSDT']
+    res = requests.get(url, headers=headers, timeout=10)
+    if res.status_code != 200:
+        # Alternatif Gate Futures API
+        url_fut = "https://api.gateio.ws/api/v4/futures/usdt/candlesticks?contract=BTR_USDT&interval=12h&limit=500"
+        res = requests.get(url_fut, headers=headers, timeout=10)
+        
+    if res.status_code == 200:
+        data = res.json()
+        # Gate.io candlestick formatı: [timestamp, volume, close, high, low, open]
+        df = pd.DataFrame(data, columns=['timestamp', 'volume', 'close', 'high', 'low', 'open'])
+        df['close'] = df['close'].astype(float)
+        # Kronolojik sıraya dizelim
+        df = df.iloc[::-1].reset_index(drop=True)
+        return df
+    else:
+        raise Exception(f"API Yanıt Vermedi ({res.status_code}): {res.text}")
 
 if st.button("🔥 BTR/USDT Taramasını Başlat"):
-    st.info("Binance verileri çekiliyor...")
+    st.info("Veriler çekiliyor ve kesişim taranıyor...")
     results = []
     
-    for sym in FUTURES_COINS:
-        try:
-            df = fetch_klines_robust(sym, timeframe, limit=500)
-            
-            if len(df) < 301:
-                st.error(f"{sym} için çekilen veri sayısı ({len(df)}) 301 barlık LRC hesaplamaya yetersiz.")
-                continue
-                
+    try:
+        df = fetch_btr_klines()
+        
+        if len(df) < 301:
+            st.error(f"Çekilen veri sayısı ({len(df)}) 301 barlık LRC hesaplamaya yetersiz.")
+        else:
             ratio = df['close']
             
             reg300, up300, low300 = calc_lrc(ratio, 300)
             reg301, up301, low301 = calc_lrc(ratio, 301)
             
-            if up300 is None or up301 is None:
-                st.error("LRC kanalları hesaplanamadı.")
-                continue
+            if up300 is not None and up301 is not None:
+                hit_300_upper = any(ratio.iloc[-j] >= up300[-j] for j in range(1, min(lookback_bars + 1, len(up300))))
+                hit_300_lower = any(ratio.iloc[-j] <= low300[-j] for j in range(1, min(lookback_bars + 1, len(low300))))
                 
-            hit_300_upper = any(ratio.iloc[-j] >= up300[-j] for j in range(1, min(lookback_bars + 1, len(up300))))
-            hit_300_lower = any(ratio.iloc[-j] <= low300[-j] for j in range(1, min(lookback_bars + 1, len(low300))))
-            
-            hit_301_upper = any(ratio.iloc[-j] >= up301[-j] for j in range(1, min(lookback_bars + 1, len(up301))))
-            hit_301_lower = any(ratio.iloc[-j] <= low301[-j] for j in range(1, min(lookback_bars + 1, len(low301))))
-            
-            status = []
-            if hit_300_upper or hit_300_lower: status.append("300/300")
-            if hit_301_upper or hit_301_lower: status.append("301/301")
-            
-            last_price = ratio.iloc[-1]
-            
-            if status:
-                channel_str = " & ".join(status)
-                signal_type = "ÜST BANT KESİŞİMİ (Short)" if (hit_300_upper or hit_301_upper) else "ALT BANT KESİŞİMİ (Long)"
+                hit_301_upper = any(ratio.iloc[-j] >= up301[-j] for j in range(1, min(lookback_bars + 1, len(up301))))
+                hit_301_lower = any(ratio.iloc[-j] <= low301[-j] for j in range(1, min(lookback_bars + 1, len(low301))))
                 
-                results.append({
-                    "Sembol": "BINANCE:BTRUSDT.P",
-                    "Kanal": channel_str,
-                    "Sinyal Yönü": signal_type,
-                    "Son Fiyat": f"{last_price:.4f}"
-                })
+                status = []
+                if hit_300_upper or hit_300_lower: status.append("300/300")
+                if hit_301_upper or hit_301_lower: status.append("301/301")
                 
-                used_len = 300 if "300/300" in status else 301
-                img_bytes = generate_chart(df, sym, ratio, used_len, f"{channel_str} - {signal_type}")
+                last_price = ratio.iloc[-1]
                 
-                caption = (
-                    f"🚨 *LRC KESİŞİM SİNYALİ*\n\n"
-                    f"📌 *Sembol:* `BINANCE:BTRUSDT.P`\n"
-                    f"📊 *Kanal:* `{channel_str}`\n"
-                    f"🎯 *Sinyal:* `{signal_type}`\n"
-                    f"📈 *Fiyat:* `{last_price:.4f}`"
-                )
-                
-                send_telegram_photo(telegram_token, telegram_chat_id, img_bytes, caption)
-                
-            else:
-                st.write(f"BTR/USDT 12h periyodunda son {lookback_bars} barda 300 veya 301 kanallarına kesişim tespit edilmedi.")
-                st.write(f"Son Fiyat: {last_price:.4f} | 300 Üst Bant: {up300[-1]:.4f} | 300 Alt Bant: {low300[-1]:.4f}")
+                if status:
+                    channel_str = " & ".join(status)
+                    signal_type = "ÜST BANT KESİŞİMİ (Short)" if (hit_300_upper or hit_301_upper) else "ALT BANT KESİŞİMİ (Long)"
+                    
+                    results.append({
+                        "Sembol": "BTRUSDT",
+                        "Kanal": channel_str,
+                        "Sinyal Yönü": signal_type,
+                        "Son Fiyat": f"{last_price:.4f}"
+                    })
+                    
+                    used_len = 300 if "300/300" in status else 301
+                    img_bytes = generate_chart(df, "BTR/USDT", ratio, used_len, f"{channel_str} - {signal_type}")
+                    
+                    caption = (
+                        f"🚨 *LRC KESİŞİM SİNYALİ*\n\n"
+                        f"📌 *Sembol:* `BTRUSDT`\n"
+                        f"📊 *Kanal:* `{channel_str}`\n"
+                        f"🎯 *Sinyal:* `{signal_type}`\n"
+                        f"📈 *Fiyat:* `{last_price:.4f}`"
+                    )
+                    
+                    send_telegram_photo(telegram_token, telegram_chat_id, img_bytes, caption)
+                    st.success("Kesişim Yakalandı!")
+                    st.table(pd.DataFrame(results))
+                else:
+                    st.write(f"BTR/USDT 12h periyodunda son {lookback_bars} barda 300 veya 301 kanallarına kesişim tespit edilmedi.")
+                    st.write(f"Son Fiyat: {last_price:.4f} | 300 Üst Bant: {up300[-1]:.4f} | 300 Alt Bant: {low300[-1]:.4f}")
 
-        except Exception as e:
-            st.error(f"Hata oluştu: {e}")
-            
-    if results:
-        st.success("Kesişim Yakalandı!")
-        st.table(pd.DataFrame(results))
+    except Exception as e:
+        st.error(f"Hata oluştu: {e}")
