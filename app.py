@@ -66,36 +66,45 @@ def generate_chart(df, symbol, ratio_series, length, cross_type):
     plt.close(fig)
     return buf.getvalue()
 
-# Geo-block aşımı için CORS Proxy üzerinden Binance API sorgusu
-def fetch_klines_via_proxy(symbol, interval, limit=500):
-    target_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    proxy_url = f"https://api.allorigins.win/raw?url={requests.utils.quote(target_url)}"
+# Güvenli ve Geo-block engelini aşan Binance Klines Veri Çekme Fonksiyonu
+def fetch_klines_robust(symbol, interval, limit=500):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     
-    res = requests.get(proxy_url, timeout=15)
-    if res.status_code != 200:
-        # Alternatif fallback proxy
-        alt_proxy = f"https://corsproxy.io/?{requests.utils.quote(target_url)}"
-        res = requests.get(alt_proxy, timeout=15)
-        if res.status_code != 200:
-            raise Exception(f"API Yanıtı: {res.status_code} - {res.text}")
+    endpoints = [
+        f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    ]
+    
+    last_err = None
+    for url in endpoints:
+        try:
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, list) and len(data) > 0:
+                    df = pd.DataFrame(data, columns=[
+                        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                        'close_time', 'quote_vol', 'trades', 'tb_base_vol', 'tb_quote_vol', 'ignore'
+                    ])
+                    df['close'] = df['close'].astype(float)
+                    return df
+        except Exception as e:
+            last_err = e
+            continue
             
-    data = res.json()
-    df = pd.DataFrame(data, columns=[
-        'timestamp', 'open', 'high', 'low', 'close', 'volume',
-        'close_time', 'quote_vol', 'trades', 'tb_base_vol', 'tb_quote_vol', 'ignore'
-    ])
-    df['close'] = df['close'].astype(float)
-    return df
+    raise Exception(f"Veri çekilemedi. Son hata: {last_err}")
 
 FUTURES_COINS = ['BTRUSDT']
 
 if st.button("🔥 BTR/USDT Taramasını Başlat"):
-    st.info("Bölgesel engel aşılıyor, Binance verileri çekiliyor...")
+    st.info("Binance verileri çekiliyor...")
     results = []
     
     for sym in FUTURES_COINS:
         try:
-            df = fetch_klines_via_proxy(sym, timeframe, limit=500)
+            df = fetch_klines_robust(sym, timeframe, limit=500)
             
             if len(df) < 301:
                 st.error(f"{sym} için çekilen veri sayısı ({len(df)}) 301 barlık LRC hesaplamaya yetersiz.")
