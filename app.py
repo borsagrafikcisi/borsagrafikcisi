@@ -20,7 +20,7 @@ telegram_token = st.sidebar.text_input("Telegram Bot Token", value=DEFAULT_TOKEN
 telegram_chat_id = st.sidebar.text_input("Telegram Chat ID", value=DEFAULT_CHAT_ID)
 
 lookback_bars = st.sidebar.slider("Kesişim Kontrolü (Son Kaç Bar?)", 35)
-timeframe = st.sidebar.selectbox("Periyot", ["1h", "4h", "1d", 11h", "12h", "13h"], index=0)
+timeframe = st.sidebar.selectbox("Periyot", ["1h", "4h", "1d", "12h", "13h"], index=0)
 
 # Telegram Fotoğraf Gönderme Fonksiyonu
 def send_telegram_photo(bot_token, chat_id, image_bytes, caption):
