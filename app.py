@@ -21,14 +21,20 @@ timeframe = st.sidebar.selectbox("Periyot", ["12h"], index=0)
 
 def send_telegram_photo(bot_token, chat_id, image_bytes, caption):
     if not bot_token or not chat_id:
+        st.error("Telegram Token veya Chat ID eksik!")
         return
     url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
     files = {'photo': ('chart.png', image_bytes, 'image/png')}
     data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown'}
     try:
-        requests.post(url, data=data, files=files)
+        res = requests.post(url, data=data, files=files)
+        if res.status_code != 200:
+            st.error(f"Telegram Gönderim Hatası ({res.status_code}): {res.text}")
+        else:
+            st.success("Telegram mesajı başarıyla gönderildi!")
     except Exception as e:
-        st.error(f"Telegram hatası: {e}")
+        st.error(f"Telegram bağlantı hatası: {e}")
+
 
 def calc_lrc(series, length):
     if len(series) < length:
