@@ -66,28 +66,28 @@ def generate_chart(df, symbol, ratio_series, length, cross_type):
     plt.close(fig)
     return buf.getvalue()
 
-# Geo-block engeli olmayan Gate.io Public API üzerinden BTR/USDT verisi çekme
 def fetch_btr_klines():
-    # Gate.io 12h periyot için '12h' kullanır
     url = "https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=BTR_USDT&interval=12h&limit=500"
     headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
     
     res = requests.get(url, headers=headers, timeout=10)
-    if res.status_code != 200:
-        # Alternatif Gate Futures API
-        url_fut = "https://api.gateio.ws/api/v4/futures/usdt/candlesticks?contract=BTR_USDT&interval=12h&limit=500"
-        res = requests.get(url_fut, headers=headers, timeout=10)
-        
+    
     if res.status_code == 200:
         data = res.json()
-        # Gate.io candlestick formatı: [timestamp, volume, close, high, low, open]
-        df = pd.DataFrame(data, columns=['timestamp', 'volume', 'close', 'high', 'low', 'open'])
+        if not data:
+            raise Exception("API veri döndürmedi.")
+            
+        # Dinamik sütun eşleme (Kaç sütun gelirse gelsin hata vermez)
+        df = pd.DataFrame(data)
+        # Gate.io spot candlestick sırası: [timestamp, volume, close, high, low, open, ...]
+        df.columns = ['timestamp', 'volume', 'close', 'high', 'low', 'open'] + [f'extra_{i}' for i in range(len(df.columns) - 6)]
+        
         df['close'] = df['close'].astype(float)
-        # Kronolojik sıraya dizelim
+        # Eskiden yeniye sıralama
         df = df.iloc[::-1].reset_index(drop=True)
         return df
     else:
-        raise Exception(f"API Yanıt Vermedi ({res.status_code}): {res.text}")
+        raise Exception(f"API Yanıtı ({res.status_code}): {res.text}")
 
 if st.button("🔥 BTR/USDT Taramasını Başlat"):
     st.info("Veriler çekiliyor ve kesişim taranıyor...")
