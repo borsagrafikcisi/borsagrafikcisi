@@ -10,13 +10,17 @@ st.set_page_config(page_title="TOTAL3 Dual LRC Scanner", layout="wide")
 
 st.title("🚀 TOTAL3 / Altcoin Dual LRC Kesişim Tarayıcısı")
 
+# Telegram Varsayılan Bilgileri (Sabitlendi)
+DEFAULT_TOKEN = "8770184809:AAHskJ8stv-BfC9DVHuKKX-ooekSf5zskV4"
+DEFAULT_CHAT_ID = "1276919986"
+
 # Sidebar Ayarları
 st.sidebar.header("⚙️ Tarama & Telegram Ayarları")
-telegram_token = st.sidebar.text_input("Telegram Bot Token", type="password")
-telegram_chat_id = st.sidebar.text_input("Telegram Chat ID")
+telegram_token = st.sidebar.text_input("Telegram Bot Token", value=DEFAULT_TOKEN, type="password")
+telegram_chat_id = st.sidebar.text_input("Telegram Chat ID", value=DEFAULT_CHAT_ID)
 
-lookback_bars = st.sidebar.slider("Kesişim Kontrolü (Son Kaç Bar?)", 30)
-timeframe = st.sidebar.selectbox("Periyot", ["1h", "4h", "1d", "11h", "12h", "13h"], index=0)
+lookback_bars = st.sidebar.slider("Kesişim Kontrolü (Son Kaç Bar?)", 35)
+timeframe = st.sidebar.selectbox("Periyot", ["1h", "4h", "1d", 11h", "12h", "13h"], index=0)
 
 # Telegram Fotoğraf Gönderme Fonksiyonu
 def send_telegram_photo(bot_token, chat_id, image_bytes, caption):
@@ -54,10 +58,10 @@ def generate_chart(df, symbol, ratio_series, length, cross_type):
     if reg is not None:
         idx = ratio_series.index[-length:]
         ax.plot(idx, reg, 'r--', label='Orta Kanal')
-        ax.plot(idx, upper, 'g--', label='Üst Bant')
-        ax.plot(idx, lower, 'g--', label='Alt Bant')
+        ax.plot(idx, upper, 'g--', label='Üst Bant (Short)')
+        ax.plot(idx, lower, 'g--', label='Alt Bant (Long)')
     
-    ax.set_title(f"{symbol} - {cross_type} Kesişim Grafiği ({timeframe})")
+    ax.set_title(f"TOTAL3 / {symbol} - {cross_type} Kesişim Grafiği ({timeframe})")
     ax.legend()
     plt.xticks(rotation=45)
     plt.tight_layout()
@@ -68,56 +72,86 @@ def generate_chart(df, symbol, ratio_series, length, cross_type):
     plt.close(fig)
     return buf.getvalue()
 
+# Popüler Binance Futures Coin Listesi
+FUTURES_COINS = [
+    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'AVAX/USDT', 'NEAR/USDT', 'ADA/USDT',
+    'XRP/USDT', 'DOGE/USDT', 'LINK/USDT', 'SUI/USDT', 'PEPE/USDT', 'FET/USDT',
+    'APT/USDT', 'RNDR/USDT', 'INJ/USDT', 'DOT/USDT', 'MATIC/USDT', 'LTC/USDT',
+    'TRX/USDT', 'BCH/USDT', 'ARB/USDT', 'OP/USDT', 'TIA/USDT', 'SEI/USDT',
+    'FTM/USDT', 'GALA/USDT', 'SAND/USDT', 'MANA/USDT', 'SHIB/USDT', 'WIF/USDT',
+    'FLOKI/USDT', 'BONK/USDT', 'ORDI/USDT', '1000SATS/USDT', 'STX/USDT', 'FIL/USDT',
+    'ATOM/USDT', 'ETC/USDT', 'ICP/USDT', 'XMR/USDT', 'AAVE/USDT', 'MKR/USDT',
+    'CRV/USDT', 'DYDX/USDT', 'UNI/USDT', 'GRT/USDT', 'ALGO/USDT', 'EGLD/USDT', 'BTR/USDT'
+]
+
 # Main Tarama Butonu
-if st.button("🔥 Dual Taramayı Başlat (300/300 & 301/301)"):
-    st.info("Canlı piyasa verileri çekiliyor...")
+if st.button("🔥 Binance Futures Taramasını Başlat (300/300 & 301/301)"):
+    st.info("Canlı Binance Futures verileri çekiliyor ve rasyolar hesaplanıyor...")
     
-    exchange = ccxt.binance()
-    symbols = ['AVAX/USDT', 'SOL/USDT', 'BTC/USDT', 'ETH/USDT', 'XRP/USDT', 'ADA/USDT', 'LINK/USDT']
+    exchange = ccxt.binance({'options': {'defaultType': 'future'}})
     
     results = []
     
-    for sym in symbols:
+    progress_bar = st.progress(0)
+    total_coins = len(FUTURES_COINS)
+    
+    for i, sym in enumerate(FUTURES_COINS):
+        progress_bar.progress((i + 1) / total_coins)
         try:
-            ohlcv = exchange.fetch_ohlcv(sym, timeframe=timeframe, limit=400)
+            ohlcv = exchange.fetch_ohlcv(sym, timeframe=timeframe, limit=350)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
-            ratio = df['close'] * 1.5
+            ratio = df['close']
             
-            # 300/300 Kontrolü
             _, up300, low300 = calc_lrc(ratio, 300)
-            # 301/301 Kontrolü
             _, up301, low301 = calc_lrc(ratio, 301)
             
-            last_price = ratio.iloc[-1]
+            if up300 is None or up301 is None:
+                continue
+                
+            hit_300_upper = any(ratio.iloc[-j] >= up300[-j] for j in range(1, lookback_bars + 1))
+            hit_300_lower = any(ratio.iloc[-j] <= low300[-j] for j in range(1, lookback_bars + 1))
             
-            hit_300 = up300 is not None and last_price >= up300[-1]
-            hit_301 = up301 is not None and last_price >= up301[-1]
+            hit_301_upper = any(ratio.iloc[-j] >= up301[-j] for j in range(1, lookback_bars + 1))
+            hit_301_lower = any(ratio.iloc[-j] <= low301[-j] for j in range(1, low301[-j] if len(low301) >= j else 1))
             
             status = []
-            if hit_300: status.append("300/300")
-            if hit_301: status.append("301/301")
+            if hit_300_upper or hit_300_lower: status.append("300/300")
+            if hit_301_upper or hit_301_lower: status.append("301/301")
             
             if status:
                 channel_str = " & ".join(status)
+                signal_type = "ÜST BANT KESİŞİMİ (Short)" if (hit_300_upper or hit_301_upper) else "ALT BANT KESİŞİMİ (Long)"
+                last_price = ratio.iloc[-1]
+                
                 results.append({
-                    "Sembol": sym,
-                    "Kesişen Kanal": channel_str,
-                    "Son Rasyo": f"{last_price:.4f}",
-                    "Durum": "Kesişim Var!"
+                    "Sembol (Binance Futures)": sym,
+                    "Kanal": channel_str,
+                    "Sinyal Yönü": signal_type,
+                    "Son Rasyo Fiyatı": f"{last_price:.4f}"
                 })
                 
-                used_len = 300 if hit_300 else 301
-                img_bytes = generate_chart(df, sym, ratio, used_len, channel_str)
+                used_len = 300 if "300/300" in status else 301
+                img_bytes = generate_chart(df, sym, ratio, used_len, f"{channel_str} - {signal_type}")
                 
-                caption = f"🚨 *LRC KESİŞİM SİNYALİ*\n\n📌 *Sembol:* `{sym}`\n📊 *Kanal:* `{channel_str}`\n📈 *Rasyo:* `{last_price:.4f}`"
+                clean_ticker = sym.replace('/', '').replace(':USDT', '')
+                caption = (
+                    f"🚨 *LRC KESİŞİM SİNYALİ*\n\n"
+                    f"📌 *Sembol:* `BINANCE:{clean_ticker}.P`\n"
+                    f"📊 *Kanal:* `{channel_str}`\n"
+                    f"🎯 *Sinyal:* `{signal_type}`\n"
+                    f"📈 *Rasyo Fiyatı:* `{last_price:.4f}`"
+                )
+                
                 send_telegram_photo(telegram_token, telegram_chat_id, img_bytes, caption)
                 
         except Exception as e:
             continue
             
+    progress_bar.empty()
+    
     if results:
-        st.success("Tarama Tamamlandı! Kesişimler Bulundu.")
+        st.success(f"Tarama Tamamlandı! Toplam {len(results)} kesişim bulundu.")
         st.table(pd.DataFrame(results))
     else:
-        st.warning("Şu anda belirlenen barlarda kesişim sağlayan coin bulunamadı.")
+        st.warning("Seçilen periyot ve bar aralığında kesişim sağlanan coin bulunamadı.")
