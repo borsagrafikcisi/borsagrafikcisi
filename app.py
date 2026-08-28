@@ -19,8 +19,9 @@ st.sidebar.header("⚙️ Tarama & Telegram Ayarları")
 telegram_token = st.sidebar.text_input("Telegram Bot Token", value=DEFAULT_TOKEN, type="password")
 telegram_chat_id = st.sidebar.text_input("Telegram Chat ID", value=DEFAULT_CHAT_ID)
 
-lookback_bars = st.sidebar.slider("Kesişim Kontrolü (Son Kaç Bar?)", 100)
-timeframe = st.sidebar.selectbox("Periyot", ["12h", ], index=0)
+# Slider hatası düzeltildi (min, max ve varsayılan değerler eklendi)
+lookback_bars = st.sidebar.slider("Kesişim Kontrolü (Son Kaç Bar?)", min_value=1, max_value=100, value=35)
+timeframe = st.sidebar.selectbox("Periyot", ["12h"], index=0)
 
 # Telegram Fotoğraf Gönderme Fonksiyonu
 def send_telegram_photo(bot_token, chat_id, image_bytes, caption):
@@ -72,7 +73,7 @@ def generate_chart(df, symbol, ratio_series, length, cross_type):
     plt.close(fig)
     return buf.getvalue()
 
-# Sadece Test Edeceğimiz Coin
+# Test Coin
 FUTURES_COINS = ['BTR/USDT']
 
 # Tarama Butonu
@@ -84,7 +85,6 @@ if st.button("🔥 BTR/USDT Taramasını Başlat"):
     
     for sym in FUTURES_COINS:
         try:
-            # 12h mumlar için en az 301 bar verebilecek 500 limit çekiyoruz
             ohlcv = exchange.fetch_ohlcv(sym, timeframe=timeframe, limit=500)
             
             if len(ohlcv) < 301:
@@ -101,7 +101,6 @@ if st.button("🔥 BTR/USDT Taramasını Başlat"):
                 st.error("LRC kanalları hesaplanamadı.")
                 continue
                 
-            # Son N barda bant ihlali / teması var mı?
             hit_300_upper = any(ratio.iloc[-j] >= up300[-j] for j in range(1, min(lookback_bars + 1, len(up300))))
             hit_300_lower = any(ratio.iloc[-j] <= low300[-j] for j in range(1, min(lookback_bars + 1, len(low300))))
             
