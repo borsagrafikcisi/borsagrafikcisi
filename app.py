@@ -70,21 +70,16 @@ def run_scan(target_length, label_name):
         up2, low2 = calc_lrc(ratio, calc_len)
         
         if up2 is not None and low2 is not None:
-            hit_up = any(ratio.iloc[-j] >= up2[-j] for j in range(1, min(lookback_bars + 1, len(up2))))
-            hit_low = any(ratio.iloc[-j] <= low2[-j] for j in range(1, min(lookback_bars + 1, len(low2))))
-            
-            last_price = ratio.iloc[-1]
-            
-            if hit_up or hit_low:
-                sig_type = "ÜST BANT KESİŞİMİ (Short)" if hit_up else "ALT BANT KESİŞİMİ (Long)"
+            hit_f"📌 *SEMBOL:* `BTRUSDT`\n"g_type = "ÜST BANT KESİŞİMİ (Short)" if hit_up else "ALT BANT KESİŞİMİ (Long)"
                 
                 msg = (
                     f"🚨 *LRC KESİŞİM SİNYALİ*\n\n"
-                    f"📌 *Sembol:* `BTRUSDT`\n"
-                    f"📊 *Kanal:* `{label_name}`\n"
-                    f"🎯 *Sinyal:* `{sig_type}`\n"
-                    f"📈 *Fiyat:* `{last_price:.4f}`"
+                    f"📌 *SEMBOL:* `BTRUSDT`\n"
+                    f"📊 *KANAL:* `{label_name}`\n"
+                    f"🎯 *SİNYAL:* `{sig_type}`\n"
+                    f"📈 *FİYAT:* `{last_price:.4f}`"
                 )
+
                 
                 send_telegram_msg(telegram_token, telegram_chat_id, msg)
                 st.success(f"{label_name} Kesişimi Yakalandı ve Telegram'a Bildirildi!")
