@@ -3,12 +3,20 @@ import pandas as pd
 import numpy as np
 import requests
 
-st.set_page_config(page_title="BTR/USDT LRC Scanner", layout="wide")
+st.set_page_config(page_title="LRC Scanner", layout="wide")
 
-st.title("🚀 BTR/USDT LRC (300 & 301) Kesişim Tarayıcısı")
+st.title("🚀 Çoklu Coin LRC (300 & 301) Otomatik Kesişim Tarayıcısı")
 
 DEFAULT_TOKEN = "8770184809:AAHskJ8stv-BfC9DVHuKKX-ooekSf5zskV4"
 DEFAULT_CHAT_ID = "-1003546836920"
+
+# Taranacak Coin Listesi (Dilediğin gibi ekleme yapabilirsin)
+COINS = [
+    {"symbol": "BTRUSDT", "coingecko_id": "bitrue-token"},
+    {"symbol": "BTCUSDT", "coingecko_id": "bitcoin"},
+    {"symbol": "ETHUSDT", "coingecko_id": "ethereum"},
+    {"symbol": "SOLUSDT", "coingecko_id": "solana"}
+]
 
 st.sidebar.header("⚙️ Tarama & Telegram Ayarları")
 telegram_token = st.sidebar.text_input("Telegram Bot Token", value=DEFAULT_TOKEN, type="password")
@@ -42,8 +50,8 @@ def calc_lrc(series, length):
     
     return up2, low2
 
-def fetch_btr_gecko():
-    url = "https://api.coingecko.com/api/v3/coins/bitrue-token/market_chart?vs_currency=usd&days=180"
+def fetch_coin_gecko(coingecko_id):
+    url = f"https://api.coingecko.com/api/v3/coins/{coingecko_id}/market_chart?vs_currency=usd&days=180"
     headers = {'User-Agent': 'Mozilla/5.0'}
     
     res = requests.get(url, headers=headers, timeout=10)
@@ -58,50 +66,74 @@ def fetch_btr_gecko():
         df_12h = df.resample('12h').agg({'close': 'last'}).dropna().reset_index()
         return df_12h
     else:
-        raise Exception(f"Coingecko API Yanıtı ({res.status_code}): {res.text}")
+        raise Exception(f"API Hatası ({coingecko_id} - {res.status_code})")
 
-def run_scan(target_length, label_name):
-    st.info(f"{label_name} için BTR/USDT fiyat verileri çekiliyor...")
-    try:
-        df = fetch_btr_gecko()
-        calc_len = min(target_length, len(df))
-        ratio = df['close']
+def run_full_scan():
+    st.info(f"Tarama Başlatıldı ({len(COINS)} Coin 300 ve 301 kanalları için taranıyor)...")
+    results = []
+    
+    for coin in COINS:
+        symbol = coin["symbol"]
+        cg_id = coin["coingecko_id"]
         
-        up2, low2 = calc_lrc(ratio, calc_len)
-        
-        if up2 is not None and low2 is not None:
-            hit_f"📌 *SEMBOL:* `BTRUSDT`\n"g_type = "ÜST BANT KESİŞİMİ (Short)" if hit_up else "ALT BANT KESİŞİMİ (Long)"
+        try:
+            df = fetch_coin_gecko(cg_id)
+            ratio = df['close']
+            
+            calc_len_300 = min(300, len(df))
+            calc_len_301 = min(301, len(df))
+            
+            up2_300, low2_300 = calc_lrc(ratio, calc_len_300)
+            up2_301, low2_301 = calc_lrc(ratio, calc_len_301)
+            
+            hit_300 = False
+            hit_301 = False
+            
+            if up2_300 is not None and low2_300 is not None:
+                hit_300_up = any(ratio.iloc[-j] >= up2_300[-j] for j in range(1, min(lookback_bars + 1, len(up2_300))))
+                hit_300_low = any(ratio.iloc[-j] <= low2_300[-j] for j in range(1, min(lookback_bars + 1, len(low2_300))))
+                hit_300 = hit_300_up or hit_300_low
+
+            if up2_301 is not None and low2_301 is not None:
+                hit_301_up = any(ratio.iloc[-j] >= up2_301[-j] for j in range(1, min(lookback_bars + 1, len(up2_301))))
+                hit_301_low = any(ratio.iloc[-j] <= low2_301[-j] for j in range(1, min(lookback_bars + 1, len(low2_301))))
+                hit_301 = hit_301_up or hit_301_low
+
+            if hit_300 or hit_301:
+                last_price = ratio.iloc[-1]
                 
-                msg = (
-                    f"🚨 *LRC KESİŞİM SİNYALİ*\n\n"
-                    f"📌 *SEMBOL:* `BTRUSDT`\n"
-                    f"📊 *KANAL:* `{label_name}`\n"
-                    f"🎯 *SİNYAL:* `{sig_type}`\n"
-                    f"📈 *FİYAT:* `{last_price:.4f}`"
-                )
+                # Kanal adı belirleme mantığı
+                if hit_300 and hit_301:
+                    kanal_str = "300/300 ve 301/301 ( ÇİFT KANAL KESİŞİMİ )"
+                elif hit_300:
+                    kanal_str = "300/300"
+                else:
+                    kanal_str = "301/301"
 
+                msg = (
+                    f"🚨 *LRC KESİŞİM SİNYALİ*\n"
+                    f"📌 *SEMBOL :* `{symbol}`\n"
+                    f"📊 *KANAL :*  `{kanal_str}`\n"
+                    f"🎯 *SİNYAL  :* `KESİŞİM`\n"
+                    f"📈 *FİYAT :* `{last_price:.4f}`"
+                )
                 
                 send_telegram_msg(telegram_token, telegram_chat_id, msg)
-                st.success(f"{label_name} Kesişimi Yakalandı ve Telegram'a Bildirildi!")
                 
-                st.table(pd.DataFrame([{
-                    "Sembol": "BTRUSDT",
-                    "Kanal": label_name,
-                    "Sinyal Yönü": sig_type,
-                    "Son Fiyat": f"{last_price:.4f}"
-                }]))
-            else:
-                st.write(f"BTR/USDT 12h periyodunda {label_name} için kesişim bulunamadı.")
-                st.write(f"Son Fiyat: {last_price:.4f}")
-    except Exception as e:
-        st.error(f"Hata oluştu: {e}")
+                results.append({
+                    "SEMBOL": symbol,
+                    "KANAL": kanal_str,
+                    "SİNYAL": "KESİŞİM",
+                    "FİYAT": f"{last_price:.4f}"
+                })
+        except Exception as e:
+            st.warning(f"{symbol} taranırken hata: {e}")
 
-col1, col2 = st.columns(2)
+    if results:
+        st.success(f"Tarama Tamamlandı! {len(results)} Adet Kesişim Sinyali Telegram'a Gönderildi.")
+        st.table(pd.DataFrame(results))
+    else:
+        st.write("Listedeki coinlerde seçilen barlarda 300 veya 301 kesişimi bulunamadı.")
 
-with col1:
-    if st.button("🔥 300 / 300 Taramasını Başlat", use_container_width=True):
-        run_scan(300, "300/300")
-
-with col2:
-    if st.button("⚡ 301 / 301 Taramasını Başlat", use_container_width=True):
-        run_scan(301, "301/301")
+if st.button("🔥 300/300 & 301/301 TÜM COINLERI TARAT", use_container_width=True):
+    run_full_scan()
