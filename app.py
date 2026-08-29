@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import requests
 
-st.set_page_config(page_title="Binance LRC Scanner", layout="wide")
+st.set_page_config(page_title="LRC Scanner", layout="wide")
 
 st.title("🚀 Binance Çoklu Coin LRC (300 & 301) Otomatik Kesişim Tarayıcısı")
 
@@ -11,6 +11,7 @@ DEFAULT_TOKEN = "8770184809:AAHskJ8stv-BfC9DVHuKKX-ooekSf5zskV4"
 DEFAULT_CHAT_ID = "-1003546836920"
 
 # Taranacak Binance Çiftleri Listesi
+# Yeni coin eklemek istersen listeye "XRPUSDT" gibi ekleme yapabilirsin.
 COINS = [
     "BTRUSDT",
     "BTCUSDT",
@@ -51,10 +52,15 @@ def calc_lrc(series, length):
     return up2, low2
 
 def fetch_binance_klines(symbol):
-    # Binance Public API üzerinden 12h periyodunda son 350 mumu çeker (API Key Gerekmez)
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=12h&limit=350"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    # Streamlit Cloud (ABD) engeline takılmayan alternatif Binance domaini (api3)
+    url = f"https://api3.binance.com/api/v3/klines?symbol={symbol}&interval=12h&limit=350"
     
+    # 451 hatasını aşmak için gerçek tarayıcı Headers yapısı
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    
+    # API Key GEREKMEYEN Public Klines API'si
     res = requests.get(url, headers=headers, timeout=10)
     if res.status_code == 200:
         data = res.json()
