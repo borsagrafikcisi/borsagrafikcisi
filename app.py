@@ -6,7 +6,6 @@ import requests
 from datetime import datetime
 import pytz
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -15,31 +14,48 @@ TELEGRAM_TOKEN = "8770184809:AAHskJ8stv-BfC9DVHuKKX-ooekSf5zskV4"
 TELEGRAM_CHAT_ID = "-1003546836920"
 
 LRC_LENGTH = 300
-LOOKBACK_BARS = 5
+LOOKBACK_BARS = 31
 MAX_WORKERS = 6
 
 TZ = pytz.timezone("Europe/Istanbul")
 
+# ==================== PERİYOTLAR ====================
 TIMEFRAMES = {
+    # Dakika
     "15m":  {"interval": "15m", "period": "60d"},
     "30m":  {"interval": "30m", "period": "60d"},
     "45m":  {"interval": "15m", "period": "60d", "resample": "45min"},
+
+    # Saat
     "1h":   {"interval": "1h",  "period": "730d"},
     "2h":   {"interval": "1h",  "period": "730d", "resample": "2h"},
     "3h":   {"interval": "1h",  "period": "730d", "resample": "3h"},
     "4h":   {"interval": "1h",  "period": "730d", "resample": "4h"},
+    "5h":   {"interval": "1h",  "period": "730d", "resample": "5h"},
+    "6h":   {"interval": "1h",  "period": "730d", "resample": "6h"},
+    "7h":   {"interval": "1h",  "period": "730d", "resample": "7h"},
+    "8h":   {"interval": "1h",  "period": "730d", "resample": "8h"},
+
+    # Gün
     "1d":   {"interval": "1d",  "period": "5y"},
+    "2d":   {"interval": "1d",  "period": "5y", "resample": "2D"},
+    "3d":   {"interval": "1d",  "period": "5y", "resample": "3D"},
+    "4d":   {"interval": "1d",  "period": "5y", "resample": "4D"},
+    "5d":   {"interval": "1d",  "period": "5y", "resample": "5D"},
+
+    # Hafta & Ay
     "1wk":  {"interval": "1wk", "period": "10y"},
     "1mo":  {"interval": "1mo", "period": "max"},
 }
 
-# Şimdilik örnek liste (sonra genişleteceğiz)
+# Şimdilik örnek hisse listesi (sonra tüm BIST ekleyeceğiz)
 BIST_SYMBOLS = [
     "THYAO.IS", "GARAN.IS", "AKBNK.IS", "YKBNK.IS", "ISCTR.IS", "HALKB.IS", "VAKBN.IS",
     "EREGL.IS", "KCHOL.IS", "SAHOL.IS", "TUPRS.IS", "SISE.IS", "ASELS.IS", "TCELL.IS",
     "BIMAS.IS", "FROTO.IS", "TOASO.IS", "ARCLK.IS", "CCOLA.IS", "PETKM.IS", "SASA.IS",
     "ENKAI.IS", "PGSUS.IS", "AEFES.IS", "DOAS.IS", "GUBRF.IS", "ENJSA.IS", "AKSEN.IS",
-    "ALARK.IS", "BRSAN.IS", "CIMSA.IS", "HEKTS.IS", "KOZAL.IS", "KOZAA.IS", "AYEN.IS"
+    "ALARK.IS", "BRSAN.IS", "CIMSA.IS", "HEKTS.IS", "KOZAL.IS", "KOZAA.IS", "AYEN.IS",
+    "ODAS.IS", "ZOREN.IS", "AYDEM.IS", "BIOEN.IS", "SMRTG.IS"
 ]
 
 def send_telegram(message: str):
@@ -153,7 +169,6 @@ if st.button("Tarama Başlat", type="primary", use_container_width=True):
         st.success(f"{len(all_signals)} adet kesişim bulundu!")
         st.dataframe(df_result, use_container_width=True)
         
-        # Telegram mesajı
         msg = "<b>LRC KESİŞME SİNYALLERİ</b>\n\n"
         for sig in all_signals:
             emoji = "🟠" if sig["Sinyal"] == "TURUNCU" else "🟢"
