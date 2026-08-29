@@ -55,7 +55,7 @@ BIST_SYMBOLS = [
     "BIMAS.IS", "FROTO.IS", "TOASO.IS", "ARCLK.IS", "CCOLA.IS", "PETKM.IS", "SASA.IS",
     "ENKAI.IS", "PGSUS.IS", "AEFES.IS", "DOAS.IS", "GUBRF.IS", "ENJSA.IS", "AKSEN.IS",
     "ALARK.IS", "BRSAN.IS", "CIMSA.IS", "HEKTS.IS", "KOZAL.IS", "KOZAA.IS", "AYEN.IS",
-    "ODAS.IS", "ZOREN.IS", "AYDEM.IS", "BIOEN.IS", "SMRTG.IS"
+    "ODAS.IS", "ZOREN.IS", "AYDEM.IS", "BIOEN.IS", "SMRTG.IS", "DERHL.IS"
 ]
 
 def send_telegram(message: str):
