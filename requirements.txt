@@ -1,6 +1,5 @@
-streamlit
+yfinance
 pandas
 numpy
-ccxt
-matplotlib
 requests
+pytz
