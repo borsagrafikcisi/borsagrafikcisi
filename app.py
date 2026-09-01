@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 warnings.filterwarnings("ignore")
 
-# Streamlit önbelleğini sıfırla
+# Streamlit önbelleğini temizle
 st.cache_data.clear()
 
 # ==================== AYARLAR ====================
@@ -17,7 +17,6 @@ TELEGRAM_TOKEN = "8770184809:AAHskJ8stv-BfC9DVHuKKX-ooekSf5zskV4"
 TELEGRAM_CHAT_ID = "-1003546836920"
 
 LRC_LENGTH = 300
-LOOKBACK_BARS = 31
 MAX_WORKERS = 6
 INDEX_SYMBOL = "XU100.IS"
 
@@ -54,7 +53,7 @@ def send_telegram(message: str):
         pass
 
 def calculate_linreg_fast(series: pd.Series, length: int) -> pd.Series:
-    """TradingView ta.linreg Birebir C++ Tipi Hassas Algoritması"""
+    """TradingView ta.linreg Birebir C++ Algoritması"""
     if len(series) < length:
         return pd.Series(index=series.index, dtype=float)
     
@@ -78,14 +77,11 @@ def calculate_linreg_fast(series: pd.Series, length: int) -> pd.Series:
     return pd.Series(result, index=series.index)
 
 def resample_tradingview_daily_strict(df: pd.DataFrame, days: int) -> pd.DataFrame:
-    """TradingView BIST Seans Bazlı (Gerçek İşlem Günlü) Hizaslama Engine"""
+    """TradingView İşlem Seansı Barmatik Hizalaması"""
     if days == 1 or len(df) == 0:
         return df
     
     df_sorted = df.sort_index().copy()
-    
-    # TradingView mantığı: Son mum (en güncel canlı seans) tam 0. indeks kabul edilerek geriye gruplanır.
-    # Bu sayede bugünün mumu 2d/4d paketinin neresindeyse TradingView ile %100 örtüşür.
     total_bars = len(df_sorted)
     remainder = total_bars % days
     
@@ -102,48 +98,58 @@ def resample_tradingview_daily_strict(df: pd.DataFrame, days: int) -> pd.DataFra
     })
     return df_res
 
-def detect_cross(high_reg: pd.Series, low_reg: pd.Series, lookback: int = 31):
-    if len(high_reg) < lookback + 2:
+def detect_lrc_cross_dynamic(close_series: pd.Series, tf_name: str, length: int = 300):
+    """Periyoda Duyarlı Akıllı Kesişim Yakalama Motoru"""
+    
+    # Periyoda göre tolerans pencereleri
+    if tf_name in ["15m", "30m", "45m"]:
+        lookback = 8  # Son 2 saate kadarki 15dk kırılımlar
+    elif tf_name in ["1h", "2h", "3h", "4h", "5h"]:
+        lookback = 4  # Seans içi saatlik kırılımlar
+    else:
+        lookback = 2  # Günlük ve üzeri taze sinyaller (0. ve 1. bar)
+
+    if len(close_series) < length + lookback + 1:
         return None
     
+    lrc_line = calculate_linreg_fast(close_series, length)
+    
     for i in range(1, lookback + 1):
-        prev_h = high_reg.iloc[-i-1]
-        prev_l = low_reg.iloc[-i-1]
-        curr_h = high_reg.iloc[-i]
-        curr_l = low_reg.iloc[-i]
+        curr_idx = -i
+        prev_idx = -i - 1
         
-        if pd.isna(prev_h) or pd.isna(prev_l) or pd.isna(curr_h) or pd.isna(curr_l):
+        c_curr = close_series.iloc[curr_idx]
+        lrc_curr = lrc_line.iloc[curr_idx]
+        
+        c_prev = close_series.iloc[prev_idx]
+        lrc_prev = lrc_line.iloc[prev_idx]
+        
+        if pd.isna(lrc_curr) or pd.isna(lrc_prev):
             continue
+
+        bar_diff = i - 1
+        bar_label = "ANLIK CANLI BAR" if bar_diff == 0 else f"{bar_diff} Bar Önce"
+
+        # Yukarı Kesişim (YEŞİL)
+        if c_prev <= lrc_prev and c_curr > lrc_curr:
+            return f"YEŞİL 🟢 ({bar_label})"
             
-        bar_count = i - 1
-        bar_str = "son barda" if bar_count == 0 else f"{bar_count}. mumda"
-        
-        # Birebir hassas kesişim tespiti (Float hassasiyet tol = 1e-9)
-        if (prev_h - prev_l) < -1e-9 and (curr_h - curr_l) > 1e-9:
-            return f"TURUNCU ({bar_str})"
-            
-        if (prev_h - prev_l) > 1e-9 and (curr_h - curr_l) < -1e-9:
-            return f"YEŞİL ({bar_str})"
+        # Aşağı Kesişim (TURUNCU)
+        if c_prev >= lrc_prev and c_curr < lrc_curr:
+            return f"TURUNCU 🟠 ({bar_label})"
             
     return None
 
 def build_ratio_df(stock_df: pd.DataFrame, index_df: pd.DataFrame) -> pd.DataFrame:
-    """TradingView Rasyo Grafiği Matematiksel Çatısı"""
     combined = pd.concat([stock_df, index_df], axis=1, keys=['stock', 'index'], join='inner').dropna()
     if combined.empty:
         return pd.DataFrame()
     
     ratio_df = pd.DataFrame(index=combined.index)
-    
-    # TradingView 'Hisse/Endeks' rasyo grafiği standart mum hesabı
-    c_stock = combined['stock']['Close']
-    c_index = combined['index']['Close']
-    
-    ratio_df['Close'] = c_stock / c_index
+    ratio_df['Close'] = combined['stock']['Close'] / combined['index']['Close']
     ratio_df['Open']  = combined['stock']['Open'] / combined['index']['Open']
-    ratio_df['High']  = combined['stock']['High'] / combined['index']['Low']
-    ratio_df['Low']   = combined['stock']['Low']  / combined['index']['High']
-    
+    ratio_df['High']  = combined['stock']['High'] / combined['index']['High']
+    ratio_df['Low']   = combined['stock']['Low'] / combined['index']['Low']
     return ratio_df
 
 # ==================== TARAMA MOTORU ====================
@@ -153,7 +159,7 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
         clean_symbol = symbol.replace(".IS", "")
         ticker = yf.Ticker(symbol)
         
-        # 1. Gün İçi (15m ve Türevleri)
+        # 1. Gün İçi Veriler (15m ve Türevleri)
         df_stock_15m = ticker.history(period="60d", interval="15m", auto_adjust=True)
         if not df_stock_15m.empty:
             ratio_15m = build_ratio_df(df_stock_15m, df_index_15m)
@@ -163,22 +169,19 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
                         "Open": "first", "High": "max", "Low": "min", "Close": "last"
                     }).dropna()
                     
-                    if len(df_tf) >= LRC_LENGTH:
-                        h_reg = calculate_linreg_fast(df_tf["High"], LRC_LENGTH)
-                        l_reg = calculate_linreg_fast(df_tf["Low"], LRC_LENGTH)
-                        signal = detect_cross(h_reg, l_reg, LOOKBACK_BARS)
-                        if signal:
-                            tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
-                            results.append({
-                                "Hisse": clean_symbol,
-                                "RASYON": f"{clean_symbol}/XU100",
-                                "Periyot": tf_name,
-                                "Sinyal": signal,
-                                "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 6),
-                                "Link": tv_url
-                            })
+                    signal = detect_lrc_cross_dynamic(df_tf["Close"], tf_name, LRC_LENGTH)
+                    if signal:
+                        tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
+                        results.append({
+                            "Hisse": clean_symbol,
+                            "RASYON": f"{clean_symbol}/XU100",
+                            "Periyot": tf_name,
+                            "Sinyal Durumu": signal,
+                            "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 6),
+                            "Link": tv_url
+                        })
 
-        # 2. Günlük ve Çoklu Günler (1d, 2d, 3d, 4d vb.)
+        # 2. Günlük ve Çoklu Günler (1d - 7d)
         df_stock_1d = ticker.history(period="10y", interval="1d", auto_adjust=True)
         if not df_stock_1d.empty:
             ratio_1d = build_ratio_df(df_stock_1d, df_index_1d)
@@ -186,49 +189,43 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
                 for tf_name, bar_count in DAILY_BAR_COUNTS.items():
                     df_tf = resample_tradingview_daily_strict(ratio_1d, bar_count)
                     
-                    if len(df_tf) >= LRC_LENGTH:
-                        h_reg = calculate_linreg_fast(df_tf["High"], LRC_LENGTH)
-                        l_reg = calculate_linreg_fast(df_tf["Low"], LRC_LENGTH)
-                        signal = detect_cross(h_reg, l_reg, LOOKBACK_BARS)
-                        if signal:
-                            tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
-                            results.append({
-                                "Hisse": clean_symbol,
-                                "RASYON": f"{clean_symbol}/XU100",
-                                "Periyot": tf_name,
-                                "Sinyal": signal,
-                                "RASYON Fiyat": round(df_tf["Close"].iloc[-1], 6),
-                                "Link": tv_url
-                            })
+                    signal = detect_lrc_cross_dynamic(df_tf["Close"], tf_name, LRC_LENGTH)
+                    if signal:
+                        tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
+                        results.append({
+                            "Hisse": clean_symbol,
+                            "RASYON": f"{clean_symbol}/XU100",
+                            "Periyot": tf_name,
+                            "Sinyal Durumu": signal,
+                            "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 6),
+                            "Link": tv_url
+                        })
 
                 for tf_name, rule in TIMEFRAMES_HIGHER.items():
                     df_tf = ratio_1d.resample(rule, origin='start_day').agg({
                         "Open": "first", "High": "max", "Low": "min", "Close": "last"
                     }).dropna()
                     
-                    if len(df_tf) >= LRC_LENGTH:
-                        h_reg = calculate_linreg_fast(df_tf["High"], LRC_LENGTH)
-                        l_reg = calculate_linreg_fast(df_tf["Low"], LRC_LENGTH)
-                        signal = detect_cross(h_reg, l_reg, LOOKBACK_BARS)
-                        if signal:
-                            tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
-                            results.append({
-                                "Hisse": clean_symbol,
-                                "RASYON": f"{clean_symbol}/XU100",
-                                "Periyot": tf_name,
-                                "Sinyal": signal,
-                                "RASYON Fiyat": round(df_tf["Close"].iloc[-1], 6),
-                                "Link": tv_url
-                            })
+                    signal = detect_lrc_cross_dynamic(df_tf["Close"], tf_name, LRC_LENGTH)
+                    if signal:
+                        tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
+                        results.append({
+                            "Hisse": clean_symbol,
+                            "RASYON": f"{clean_symbol}/XU100",
+                            "Periyot": tf_name,
+                            "Sinyal Durumu": signal,
+                            "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 6),
+                            "Link": tv_url
+                        })
     except:
         pass
     return results
 
 # ==================== STREAMLIT ARAYÜZÜ ====================
-st.set_page_config(page_title="BIST Rasyo LRC (Kökten Çözüm v5)", page_icon="📈", layout="wide")
+st.set_page_config(page_title="BIST Rasyo LRC Dinamik Tarayıcı", page_icon="📈", layout="wide")
 
-st.title("BIST Rasyo LRC 300 Kesişim Tarayıcı (Sıkı Hizalanmış v5)")
-st.caption("Gerçek Seans Paketi & TradingView Hassasiyet Onarımı Yapıldı")
+st.title("BIST Rasyo LRC Dinamik Toleranslı Kesişim Tarayıcı")
+st.caption("Gün İçi Hızlı Mumları Kaçırmayan, Günlük Mumları Taze Tutan Esnek Sistem")
 
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -273,13 +270,12 @@ if st.button("TARAMAYI BAŞLAT", type="primary", use_container_width=True):
             st.success(f"{len(all_signals)} adet rasyo kesişimi bulundu!")
             st.dataframe(df_res, use_container_width=True)
             
-            msg = "<b>📈 BIST RASYO LRC KESİŞİM SİNYALLERİ (v5)</b>\n\n"
+            msg = "<b>📈 BIST RASYO LRC DİNAMİK KESİŞİM SİNYALLERİ</b>\n\n"
             for sig in all_signals:
-                emoji = "🟠" if "TURUNCU" in sig["Sinyal"] else "🟢"
-                msg += f"{emoji} <b>{sig['Hisse']} / XU100</b>\n"
+                msg += f"<b>{sig['Hisse']} / XU100</b>\n"
                 msg += f"├ Periyot: <b>{sig['Periyot']}</b>\n"
-                msg += f"├ Sinyal: {sig['Sinyal']}\n"
+                msg += f"├ Sinyal: <b>{sig['Sinyal Durumu']}</b>\n"
                 msg += f"└ <a href='{sig['Link']}'>TradingView Grafiği Aç</a>\n\n"
             send_telegram(msg)
         else:
-            st.warning("Seçilen rasyolarda kesişim bulunamadı.")
+            st.warning("Seçilen rasyolarda yakın barlarda kesişim bulunamadı.")
