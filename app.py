@@ -7,10 +7,8 @@ from datetime import datetime
 import pytz
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
-import time
 warnings.filterwarnings("ignore")
 
-# Sunucu önbelleğini sıfırla
 st.cache_data.clear()
 
 # ==================== AYARLAR ====================
@@ -55,16 +53,17 @@ def send_telegram(message: str):
         pass
 
 def calculate_linreg_fast(series: pd.Series, length: int) -> pd.Series:
+    """TradingView ta.linreg Birebir Vektörel Dengi"""
     if len(series) < length:
         return pd.Series(index=series.index, dtype=float)
     
-    x = np.arange(length)
+    x = np.arange(length, dtype=np.float64)
     x_mean = x.mean()
     x_dev = x - x_mean
     x_var = (x_dev ** 2).sum()
     
-    vals = series.values
-    result = np.full(len(vals), np.nan)
+    vals = series.values.astype(np.float64)
+    result = np.full(len(vals), np.nan, dtype=np.float64)
     
     for i in range(length - 1, len(vals)):
         y_window = vals[i - length + 1 : i + 1]
@@ -78,7 +77,7 @@ def calculate_linreg_fast(series: pd.Series, length: int) -> pd.Series:
     return pd.Series(result, index=series.index)
 
 def resample_tradingview_daily(df: pd.DataFrame, days: int) -> pd.DataFrame:
-    """TradingView Birebir Gruplama (Tüm Seans Barları)"""
+    """TradingView Birebir Seans Bazlı Paketleme Motoru"""
     if days == 1 or len(df) == 0:
         return df
     
@@ -124,14 +123,15 @@ def detect_cross(high_reg: pd.Series, low_reg: pd.Series, lookback: int = 31):
     return None
 
 def build_ratio_df(stock_df: pd.DataFrame, index_df: pd.DataFrame) -> pd.DataFrame:
+    """TradingView Birebir Rasyo Mum Yapısı (OHLC / OHLC)"""
     combined = pd.concat([stock_df, index_df], axis=1, keys=['stock', 'index'], join='inner').dropna()
     if combined.empty:
         return pd.DataFrame()
     
     ratio_df = pd.DataFrame(index=combined.index)
     ratio_df['Open']  = combined['stock']['Open']  / combined['index']['Open']
-    ratio_df['High']  = combined['stock']['High']  / combined['index']['Low']
-    ratio_df['Low']   = combined['stock']['Low']   / combined['index']['High']
+    ratio_df['High']  = combined['stock']['High']  / combined['index']['High']
+    ratio_df['Low']   = combined['stock']['Low']   / combined['index']['Low']
     ratio_df['Close'] = combined['stock']['Close'] / combined['index']['Close']
     return ratio_df
 
@@ -143,12 +143,12 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
         ticker = yf.Ticker(symbol)
         
         # 1. 15m Ana Veri
-        df_stock_15m = ticker.history(period="60d", interval="15m", auto_adjust=True)
+        df_stock_15m = ticker.history(period="60d", interval="15m", auto_adjust=False)
         if not df_stock_15m.empty:
             ratio_15m = build_ratio_df(df_stock_15m, df_index_15m)
             if not ratio_15m.empty:
                 for tf_name, rule in TIMEFRAMES_15M.items():
-                    df_tf = ratio_15m if rule is None else ratio_15m.resample(rule, origin='start').agg({
+                    df_tf = ratio_15m if rule is None else ratio_15m.resample(rule, origin='start_day').agg({
                         "Open": "first", "High": "max", "Low": "min", "Close": "last"
                     }).dropna()
                     
@@ -163,12 +163,12 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
                                 "RASYON": f"{clean_symbol}/XU100",
                                 "Periyot": tf_name,
                                 "Sinyal": signal,
-                                "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 5),
+                                "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 6),
                                 "Link": tv_url
                             })
 
         # 2. 1D Ana Veri
-        df_stock_1d = ticker.history(period="10y", interval="1d", auto_adjust=True)
+        df_stock_1d = ticker.history(period="10y", interval="1d", auto_adjust=False)
         if not df_stock_1d.empty:
             ratio_1d = build_ratio_df(df_stock_1d, df_index_1d)
             if not ratio_1d.empty:
@@ -186,12 +186,12 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
                                 "RASYON": f"{clean_symbol}/XU100",
                                 "Periyot": tf_name,
                                 "Sinyal": signal,
-                                "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 5),
+                                "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 6),
                                 "Link": tv_url
                             })
 
                 for tf_name, rule in TIMEFRAMES_HIGHER.items():
-                    df_tf = ratio_1d.resample(rule, origin='start').agg({
+                    df_tf = ratio_1d.resample(rule, origin='start_day').agg({
                         "Open": "first", "High": "max", "Low": "min", "Close": "last"
                     }).dropna()
                     
@@ -206,7 +206,7 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
                                 "RASYON": f"{clean_symbol}/XU100",
                                 "Periyot": tf_name,
                                 "Sinyal": signal,
-                                "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 5),
+                                "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 6),
                                 "Link": tv_url
                             })
     except:
@@ -214,10 +214,10 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
     return results
 
 # ==================== STREAMLIT ARAYÜZÜ ====================
-st.set_page_config(page_title="YENİ Rasyo LRC Tarayıcı v2", page_icon="📈", layout="wide")
+st.set_page_config(page_title="YENİ Rasyo LRC Tarayıcı v3", page_icon="📈", layout="wide")
 
-st.title("BIST Rasyo LRC 300 Kesişim Tarayıcı (YENİ SÜRÜM v2)")
-st.caption("Eski kod önbelleği tamamen silindi | Güncel Motor")
+st.title("BIST Rasyo LRC 300 Kesişim Tarayıcı (OHLC Düzeltmeli v3)")
+st.caption("TradingView OHLC Birebir Rasyo Motoru Düzeltildi")
 
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -231,10 +231,9 @@ if st.button("YENİ TARAMAYI BAŞLAT", type="primary", use_container_width=True)
     status = st.empty()
     status.info("Taze veri indiriliyor...")
     
-    # Zaman damgalı veri çekme (cache kırıcı)
     idx_ticker = yf.Ticker(INDEX_SYMBOL)
-    df_index_15m = idx_ticker.history(period="60d", interval="15m", auto_adjust=True)
-    df_index_1d = idx_ticker.history(period="10y", interval="1d", auto_adjust=True)
+    df_index_15m = idx_ticker.history(period="60d", interval="15m", auto_adjust=False)
+    df_index_1d = idx_ticker.history(period="10y", interval="1d", auto_adjust=False)
     
     if df_index_15m.empty or df_index_1d.empty:
         st.error("Endeks verisi alınamadı!")
@@ -263,7 +262,7 @@ if st.button("YENİ TARAMAYI BAŞLAT", type="primary", use_container_width=True)
             st.success(f"{len(all_signals)} adet yeni rasyo kesişimi bulundu!")
             st.dataframe(df_res, use_container_width=True)
             
-            msg = "<b>📈 BIST YENİ RASYO LRC KESİŞİM SİNYALLERİ (v2)</b>\n\n"
+            msg = "<b>📈 BIST YENİ RASYO LRC KESİŞİM SİNYALLERİ (v3)</b>\n\n"
             for sig in all_signals:
                 emoji = "🟠" if "TURUNCU" in sig["Sinyal"] else "🟢"
                 msg += f"{emoji} <b>{sig['Hisse']} / XU100</b>\n"
