@@ -27,7 +27,6 @@ TIMEFRAMES_15M = {
     "5h": "5h", "8h": "8h", "12h": "12h", "13h": "13h"
 }
 
-# Günlük tarafta takvim değil, TradingView gibi seans barı adedi kullanılacak
 DAILY_BAR_COUNTS = {
     "1d": 1, "2d": 2, "3d": 3, "4d": 4, 
     "5d": 5, "6d": 6, "7d": 7
@@ -77,29 +76,37 @@ def calculate_linreg_fast(series: pd.Series, length: int) -> pd.Series:
     return pd.Series(result, index=series.index)
 
 def resample_tradingview_daily(df: pd.DataFrame, days: int) -> pd.DataFrame:
-    """TradingView Gibi Tam Seans Barı Bazlı Gruplama Mantığı"""
+    """
+    TradingView Birebir Gruplama:
+    Bugünden (son mumdan) geçmişe doğru N'lik paketler oluşturur.
+    """
     if days == 1 or len(df) == 0:
         return df
     
-    # Borsa seans barlarını sondan başa hizalayarak N adette birleştirir
-    remainder = len(df) % days
-    df_clean = df.iloc[remainder:] if remainder > 0 else df
+    # 1. Veriyi tersten sırala (En yeni mum en üstte)
+    df_reversed = df.iloc[::-1].reset_index()
     
-    group_id = np.arange(len(df_clean)) // days
-    df_res = df_clean.groupby(group_id).agg({
-        'Open': 'first',
-        'High': 'max',
-        'Low': 'min',
-        'Close': 'last'
-    })
-    return df_res
+    # 2. Tersten N'erli paketler oluştur (Bugün = Group 0)
+    group_id = np.arange(len(df_reversed)) // days
+    
+    # 3. Tersten paket OHLC hesabı
+    date_col = 'Date' if 'Date' in df_reversed.columns else 'index'
+    df_res = df_reversed.groupby(group_id).agg({
+        date_col: 'first',
+        'Open': 'last',    # Grubun en eski açılışı
+        'High': 'max',     # Grubun en yükseği
+        'Low': 'min',      # Grubun en düşüğü
+        'Close': 'first'   # Grubun en yeni kapanışı
+    }).set_index(date_col)
+    
+    # 4. Veriyi tekrar kronolojik sıraya diz (Eskiden yeniye)
+    return df_res.iloc[::-1]
 
 def detect_cross(high_reg: pd.Series, low_reg: pd.Series, lookback: int = 31):
     """TradingView ile Birebir Bar Sayım Uyumlu Kesişim Tespiti"""
     if len(high_reg) < lookback + 2:
         return None
     
-    # Son bar (canlı/kapanış) -> 0. bar kabul edilir
     for i in range(1, lookback + 1):
         prev_h = high_reg.iloc[-i-1]
         prev_l = low_reg.iloc[-i-1]
@@ -109,7 +116,6 @@ def detect_cross(high_reg: pd.Series, low_reg: pd.Series, lookback: int = 31):
         if pd.isna(prev_h) or pd.isna(prev_l) or pd.isna(curr_h) or pd.isna(curr_l):
             continue
             
-        # Son bardan geriye bar sayısı (i - 1 kadar mum önce)
         bar_count = i - 1
         bar_str = "son barda" if bar_count == 0 else f"{bar_count}. mumda"
         
@@ -168,12 +174,11 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
                                 "Link": tv_url
                             })
 
-        # 2. Günlük Seans Bazlı Rasyolar (1D Ana Veri - 1d, 2d, 3d, 4d, 5d, 6d, 7d)
+        # 2. Günlük Seans Bazlı Rasyolar (1d, 2d, 3d, 4d, 5d, 6d, 7d)
         df_stock_1d = ticker.history(period="10y", interval="1d", auto_adjust=True)
         if not df_stock_1d.empty:
             ratio_1d = build_ratio_df(df_stock_1d, df_index_1d)
             if not ratio_1d.empty:
-                # TradingView Seans Barlarını Grupla
                 for tf_name, bar_count in DAILY_BAR_COUNTS.items():
                     df_tf = resample_tradingview_daily(ratio_1d, bar_count)
                     
