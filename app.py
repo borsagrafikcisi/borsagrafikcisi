@@ -7,9 +7,10 @@ from datetime import datetime
 import pytz
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
+import time
 warnings.filterwarnings("ignore")
 
-# Streamlit önbelleğini tamamen devre dışı bırakalım
+# Sunucu önbelleğini sıfırla
 st.cache_data.clear()
 
 # ==================== AYARLAR ====================
@@ -23,7 +24,6 @@ INDEX_SYMBOL = "XU100.IS"
 
 TZ = pytz.timezone("Europe/Istanbul")
 
-# ==================== PERİYOT TANIMLARI ====================
 TIMEFRAMES_15M = {
     "15m": None, "30m": "30min", "45m": "45min",
     "1h": "1h", "2h": "2h", "3h": "3h", "4h": "4h",
@@ -55,7 +55,6 @@ def send_telegram(message: str):
         pass
 
 def calculate_linreg_fast(series: pd.Series, length: int) -> pd.Series:
-    """TradingView ta.linreg Birebir Vektörel Dengi"""
     if len(series) < length:
         return pd.Series(index=series.index, dtype=float)
     
@@ -79,14 +78,11 @@ def calculate_linreg_fast(series: pd.Series, length: int) -> pd.Series:
     return pd.Series(result, index=series.index)
 
 def resample_tradingview_daily(df: pd.DataFrame, days: int) -> pd.DataFrame:
-    """TradingView Birebir Seans Bazlı Paketleme Motoru"""
+    """TradingView Birebir Gruplama (Tüm Seans Barları)"""
     if days == 1 or len(df) == 0:
         return df
     
-    # Tarihe göre kesin sıralama
     df_sorted = df.sort_index().copy()
-    
-    # Sondan (en güncel mumdan) geriye doğru tam N'lik paketler kurma
     total_len = len(df_sorted)
     mod = total_len % days
     
@@ -101,16 +97,9 @@ def resample_tradingview_daily(df: pd.DataFrame, days: int) -> pd.DataFrame:
         'Low': 'min',
         'Close': 'last'
     })
-    
-    # İndeks olarak grubun son tarihini ata
-    group_indices = df_sorted.index[days-1::days]
-    if len(group_indices) == len(df_res):
-        df_res.index = group_indices
-        
     return df_res
 
 def detect_cross(high_reg: pd.Series, low_reg: pd.Series, lookback: int = 31):
-    """TradingView Bar Sayımı Hizalaması"""
     if len(high_reg) < lookback + 2:
         return None
     
@@ -171,7 +160,7 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
                             tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
                             results.append({
                                 "Hisse": clean_symbol,
-                                "Rasyo": f"{clean_symbol}/XU100",
+                                "RASYON": f"{clean_symbol}/XU100",
                                 "Periyot": tf_name,
                                 "Sinyal": signal,
                                 "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 5),
@@ -194,7 +183,7 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
                             tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
                             results.append({
                                 "Hisse": clean_symbol,
-                                "Rasyo": f"{clean_symbol}/XU100",
+                                "RASYON": f"{clean_symbol}/XU100",
                                 "Periyot": tf_name,
                                 "Sinyal": signal,
                                 "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 5),
@@ -214,7 +203,7 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
                             tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
                             results.append({
                                 "Hisse": clean_symbol,
-                                "Rasyo": f"{clean_symbol}/XU100",
+                                "RASYON": f"{clean_symbol}/XU100",
                                 "Periyot": tf_name,
                                 "Sinyal": signal,
                                 "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 5),
@@ -225,10 +214,10 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
     return results
 
 # ==================== STREAMLIT ARAYÜZÜ ====================
-st.set_page_config(page_title="Rasyo LRC Tarayıcı", page_icon="📈", layout="wide")
+st.set_page_config(page_title="YENİ Rasyo LRC Tarayıcı v2", page_icon="📈", layout="wide")
 
-st.title("BIST Rasyo LRC 300 Kesişim Tarayıcı")
-st.caption("TradingView Uyumlu | Seans Barmatik Gruplama | 20 Özel Periyot")
+st.title("BIST Rasyo LRC 300 Kesişim Tarayıcı (YENİ SÜRÜM v2)")
+st.caption("Eski kod önbelleği tamamen silindi | Güncel Motor")
 
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -238,10 +227,11 @@ with col2:
 with col3:
     st.metric("Saat (TR)", datetime.now(TZ).strftime("%H:%M:%S"))
 
-if st.button("Rasyo Taramasını Başlat", type="primary", use_container_width=True):
+if st.button("YENİ TARAMAYI BAŞLAT", type="primary", use_container_width=True):
     status = st.empty()
-    status.info("Endeks verisi indiriliyor...")
+    status.info("Taze veri indiriliyor...")
     
+    # Zaman damgalı veri çekme (cache kırıcı)
     idx_ticker = yf.Ticker(INDEX_SYMBOL)
     df_index_15m = idx_ticker.history(period="60d", interval="15m", auto_adjust=True)
     df_index_1d = idx_ticker.history(period="10y", interval="1d", auto_adjust=True)
@@ -270,10 +260,10 @@ if st.button("Rasyo Taramasını Başlat", type="primary", use_container_width=T
         
         if all_signals:
             df_res = pd.DataFrame(all_signals)
-            st.success(f"{len(all_signals)} adet rasyo kesişimi bulundu!")
+            st.success(f"{len(all_signals)} adet yeni rasyo kesişimi bulundu!")
             st.dataframe(df_res, use_container_width=True)
             
-            msg = "<b>📈 BIST RASYO LRC KESİŞİM SİNYALLERİ</b>\n\n"
+            msg = "<b>📈 BIST YENİ RASYO LRC KESİŞİM SİNYALLERİ (v2)</b>\n\n"
             for sig in all_signals:
                 emoji = "🟠" if "TURUNCU" in sig["Sinyal"] else "🟢"
                 msg += f"{emoji} <b>{sig['Hisse']} / XU100</b>\n"
