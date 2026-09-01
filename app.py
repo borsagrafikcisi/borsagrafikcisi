@@ -9,6 +9,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
 warnings.filterwarnings("ignore")
 
+# Streamlit önbelleğini tamamen devre dışı bırakalım
+st.cache_data.clear()
+
 # ==================== AYARLAR ====================
 TELEGRAM_TOKEN = "8770184809:AAHskJ8stv-BfC9DVHuKKX-ooekSf5zskV4"
 TELEGRAM_CHAT_ID = "-1003546836920"
@@ -20,7 +23,7 @@ INDEX_SYMBOL = "XU100.IS"
 
 TZ = pytz.timezone("Europe/Istanbul")
 
-# ==================== 20 ÖZEL PERİYOT HARİTASI ====================
+# ==================== PERİYOT TANIMLARI ====================
 TIMEFRAMES_15M = {
     "15m": None, "30m": "30min", "45m": "45min",
     "1h": "1h", "2h": "2h", "3h": "3h", "4h": "4h",
@@ -52,7 +55,7 @@ def send_telegram(message: str):
         pass
 
 def calculate_linreg_fast(series: pd.Series, length: int) -> pd.Series:
-    """Vektörel Hızlı Lineer Regresyon (TradingView ta.linreg birebir dengi)"""
+    """TradingView ta.linreg Birebir Vektörel Dengi"""
     if len(series) < length:
         return pd.Series(index=series.index, dtype=float)
     
@@ -76,34 +79,38 @@ def calculate_linreg_fast(series: pd.Series, length: int) -> pd.Series:
     return pd.Series(result, index=series.index)
 
 def resample_tradingview_daily(df: pd.DataFrame, days: int) -> pd.DataFrame:
-    """
-    TradingView Birebir Gruplama:
-    Bugünden (son mumdan) geçmişe doğru N'lik paketler oluşturur.
-    """
+    """TradingView Birebir Seans Bazlı Paketleme Motoru"""
     if days == 1 or len(df) == 0:
         return df
     
-    # 1. Veriyi tersten sırala (En yeni mum en üstte)
-    df_reversed = df.iloc[::-1].reset_index()
+    # Tarihe göre kesin sıralama
+    df_sorted = df.sort_index().copy()
     
-    # 2. Tersten N'erli paketler oluştur (Bugün = Group 0)
-    group_id = np.arange(len(df_reversed)) // days
+    # Sondan (en güncel mumdan) geriye doğru tam N'lik paketler kurma
+    total_len = len(df_sorted)
+    mod = total_len % days
     
-    # 3. Tersten paket OHLC hesabı
-    date_col = 'Date' if 'Date' in df_reversed.columns else 'index'
-    df_res = df_reversed.groupby(group_id).agg({
-        date_col: 'first',
-        'Open': 'last',    # Grubun en eski açılışı
-        'High': 'max',     # Grubun en yükseği
-        'Low': 'min',      # Grubun en düşüğü
-        'Close': 'first'   # Grubun en yeni kapanışı
-    }).set_index(date_col)
+    if mod != 0:
+        df_sorted = df_sorted.iloc[mod:]
+        
+    group_ids = np.arange(len(df_sorted)) // days
     
-    # 4. Veriyi tekrar kronolojik sıraya diz (Eskiden yeniye)
-    return df_res.iloc[::-1]
+    df_res = df_sorted.groupby(group_ids).agg({
+        'Open': 'first',
+        'High': 'max',
+        'Low': 'min',
+        'Close': 'last'
+    })
+    
+    # İndeks olarak grubun son tarihini ata
+    group_indices = df_sorted.index[days-1::days]
+    if len(group_indices) == len(df_res):
+        df_res.index = group_indices
+        
+    return df_res
 
 def detect_cross(high_reg: pd.Series, low_reg: pd.Series, lookback: int = 31):
-    """TradingView ile Birebir Bar Sayım Uyumlu Kesişim Tespiti"""
+    """TradingView Bar Sayımı Hizalaması"""
     if len(high_reg) < lookback + 2:
         return None
     
@@ -119,18 +126,15 @@ def detect_cross(high_reg: pd.Series, low_reg: pd.Series, lookback: int = 31):
         bar_count = i - 1
         bar_str = "son barda" if bar_count == 0 else f"{bar_count}. mumda"
         
-        # Turuncu Kesişim (High Low'u yukarı keser)
         if prev_h < prev_l and curr_h > curr_l:
             return f"TURUNCU ({bar_str})"
             
-        # Yeşil Kesişim (High Low'u aşağı keser)
         if prev_h > prev_l and curr_h < curr_l:
             return f"YEŞİL ({bar_str})"
             
     return None
 
 def build_ratio_df(stock_df: pd.DataFrame, index_df: pd.DataFrame) -> pd.DataFrame:
-    """TradingView Rasyo Mum Birebir Çapraz Bölme Mantığı"""
     combined = pd.concat([stock_df, index_df], axis=1, keys=['stock', 'index'], join='inner').dropna()
     if combined.empty:
         return pd.DataFrame()
@@ -142,14 +146,14 @@ def build_ratio_df(stock_df: pd.DataFrame, index_df: pd.DataFrame) -> pd.DataFra
     ratio_df['Close'] = combined['stock']['Close'] / combined['index']['Close']
     return ratio_df
 
-# ==================== İŞLEMCİ VE TARAMA MANTIĞI ====================
+# ==================== TARAMA MOTORU ====================
 def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.DataFrame):
     results = []
     try:
         clean_symbol = symbol.replace(".IS", "")
         ticker = yf.Ticker(symbol)
         
-        # 1. Dakikalık/Saatlik Rasyolar (15m Ana Veri)
+        # 1. 15m Ana Veri
         df_stock_15m = ticker.history(period="60d", interval="15m", auto_adjust=True)
         if not df_stock_15m.empty:
             ratio_15m = build_ratio_df(df_stock_15m, df_index_15m)
@@ -174,7 +178,7 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
                                 "Link": tv_url
                             })
 
-        # 2. Günlük Seans Bazlı Rasyolar (1d, 2d, 3d, 4d, 5d, 6d, 7d)
+        # 2. 1D Ana Veri
         df_stock_1d = ticker.history(period="10y", interval="1d", auto_adjust=True)
         if not df_stock_1d.empty:
             ratio_1d = build_ratio_df(df_stock_1d, df_index_1d)
@@ -197,7 +201,6 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
                                 "Link": tv_url
                             })
 
-                # Hafta ve Ay Taramaları
                 for tf_name, rule in TIMEFRAMES_HIGHER.items():
                     df_tf = ratio_1d.resample(rule, origin='start').agg({
                         "Open": "first", "High": "max", "Low": "min", "Close": "last"
@@ -270,7 +273,6 @@ if st.button("Rasyo Taramasını Başlat", type="primary", use_container_width=T
             st.success(f"{len(all_signals)} adet rasyo kesişimi bulundu!")
             st.dataframe(df_res, use_container_width=True)
             
-            # Telegram Bildirimi
             msg = "<b>📈 BIST RASYO LRC KESİŞİM SİNYALLERİ</b>\n\n"
             for sig in all_signals:
                 emoji = "🟠" if "TURUNCU" in sig["Sinyal"] else "🟢"
