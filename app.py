@@ -49,7 +49,6 @@ BIST_SYMBOLS = [
 
 # ==================== DURUM (STATE) YÖNETİMİ ====================
 def get_scan_status() -> bool:
-    """Sunucudaki durum dosyasından tarama durumunu okur."""
     if not os.path.exists(STATE_FILE):
         return False
     try:
@@ -60,18 +59,8 @@ def get_scan_status() -> bool:
         return False
 
 def set_scan_status(status: bool):
-    """Sunucudaki durum dosyasına durumu kaydeder (Sekme kapansa da kaybolmaz)."""
     with open(STATE_FILE, "w") as f:
         json.dump({"is_active": status}, f)
-
-# ==================== SEANS KONTROLÜ ====================
-def is_bist_open() -> bool:
-    now = datetime.now(TZ)
-    if now.weekday() >= 5:
-        return False
-    start_time = now.replace(hour=10, minute=0, second=0, microsecond=0)
-    end_time = now.replace(hour=18, minute=5, second=0, microsecond=0)
-    return start_time <= now <= end_time
 
 # ==================== YARDIMCI FONKSİYONLAR ====================
 def send_telegram(message: str):
@@ -83,6 +72,7 @@ def send_telegram(message: str):
         pass
 
 def calculate_linreg_fast(series: pd.Series, length: int) -> pd.Series:
+    """TradingView ta.linreg C++ Birebir Hesaplama Motoru"""
     if len(series) < length:
         return pd.Series(index=series.index, dtype=float)
     x = np.arange(length, dtype=np.float64)
@@ -112,22 +102,35 @@ def resample_tradingview_daily_strict(df: pd.DataFrame, days: int) -> pd.DataFra
     group_ids = np.arange(len(df_sorted)) // days
     return df_sorted.groupby(group_ids).agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'})
 
-def detect_lrc_cross_dynamic(close_series: pd.Series, tf_name: str, length: int = 300):
+def detect_lrc_300_300_bands_cross(df: pd.DataFrame, tf_name: str, length: int = 300):
+    """LRC 300/300 ORTA-ÜST BAND İLE ORTA-ALT BAND KESİŞİM MOTORU"""
     lookback = 8 if tf_name in ["15m", "30m", "45m"] else (4 if tf_name in ["1h", "2h", "3h", "4h", "5h"] else 2)
-    if len(close_series) < length + lookback + 1:
+    
+    if len(df) < length + lookback + 1:
         return None
-    lrc_line = calculate_linreg_fast(close_series, length)
+    
+    # High ve Low Fiyatlarından LRC 300 Hesaplamaları
+    lrc_mid_upper = calculate_linreg_fast(df["High"], length)
+    lrc_mid_lower = calculate_linreg_fast(df["Low"], length)
+    
     for i in range(1, lookback + 1):
-        c_curr, lrc_curr = close_series.iloc[-i], lrc_line.iloc[-i]
-        c_prev, lrc_prev = close_series.iloc[-i-1], lrc_line.iloc[-i-1]
-        if pd.isna(lrc_curr) or pd.isna(lrc_prev):
+        u_curr, l_curr = lrc_mid_upper.iloc[-i], lrc_mid_lower.iloc[-i]
+        u_prev, l_prev = lrc_mid_upper.iloc[-i-1], lrc_mid_lower.iloc[-i-1]
+        
+        if pd.isna(u_curr) or pd.isna(l_curr) or pd.isna(u_prev) or pd.isna(l_prev):
             continue
+            
         bar_diff = i - 1
         bar_label = "ANLIK CANLI BAR" if bar_diff == 0 else f"{bar_diff} Bar Önce"
-        if c_prev <= lrc_prev and c_curr > lrc_curr:
+        
+        # Orta-Alt Bandın, Orta-Üst Bandı YUKARI Kesmesi (YEŞİL)
+        if l_prev <= u_prev and l_curr > u_curr:
             return f"YEŞİL 🟢 ({bar_label})"
-        if c_prev >= lrc_prev and c_curr < lrc_curr:
+            
+        # Orta-Alt Bandın, Orta-Üst Bandı AŞAĞI Kesmesi (TURUNCU)
+        if l_prev >= u_prev and l_curr < u_curr:
             return f"TURUNCU 🟠 ({bar_label})"
+            
     return None
 
 def build_ratio_df(stock_df: pd.DataFrame, index_df: pd.DataFrame) -> pd.DataFrame:
@@ -152,7 +155,7 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
             if not ratio_15m.empty:
                 for tf_name, rule in TIMEFRAMES_15M.items():
                     df_tf = ratio_15m if rule is None else ratio_15m.resample(rule, origin='start_day').agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}).dropna()
-                    signal = detect_lrc_cross_dynamic(df_tf["Close"], tf_name, LRC_LENGTH)
+                    signal = detect_lrc_300_300_bands_cross(df_tf, tf_name, LRC_LENGTH)
                     if signal:
                         tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
                         results.append({"Hisse": clean_symbol, "RASYON": f"{clean_symbol}/XU100", "Periyot": tf_name, "Sinyal Durumu": signal, "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 6), "Link": tv_url})
@@ -163,14 +166,14 @@ def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.D
             if not ratio_1d.empty:
                 for tf_name, bar_count in DAILY_BAR_COUNTS.items():
                     df_tf = resample_tradingview_daily_strict(ratio_1d, bar_count)
-                    signal = detect_lrc_cross_dynamic(df_tf["Close"], tf_name, LRC_LENGTH)
+                    signal = detect_lrc_300_300_bands_cross(df_tf, tf_name, LRC_LENGTH)
                     if signal:
                         tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
                         results.append({"Hisse": clean_symbol, "RASYON": f"{clean_symbol}/XU100", "Periyot": tf_name, "Sinyal Durumu": signal, "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 6), "Link": tv_url})
 
                 for tf_name, rule in TIMEFRAMES_HIGHER.items():
                     df_tf = ratio_1d.resample(rule, origin='start_day').agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}).dropna()
-                    signal = detect_lrc_cross_dynamic(df_tf["Close"], tf_name, LRC_LENGTH)
+                    signal = detect_lrc_300_300_bands_cross(df_tf, tf_name, LRC_LENGTH)
                     if signal:
                         tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
                         results.append({"Hisse": clean_symbol, "RASYON": f"{clean_symbol}/XU100", "Periyot": tf_name, "Sinyal Durumu": signal, "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 6), "Link": tv_url})
@@ -199,7 +202,7 @@ def run_full_scan():
         st.success(f"Son Tarama ({datetime.now(TZ).strftime('%H:%M:%S')}): {len(all_signals)} adet kesişim bulundu!")
         st.dataframe(df_res, use_container_width=True)
         
-        msg = f"<b>🤖 BIST RASYO LRC OTO BİLDİRİM ({datetime.now(TZ).strftime('%H:%M')})</b>\n\n"
+        msg = f"<b>🤖 BIST RASYO LRC 300/300 BAND KESİŞİM BİLDİRİMİ ({datetime.now(TZ).strftime('%H:%M')})</b>\n\n"
         for sig in all_signals:
             msg += f"<b>{sig['Hisse']} / XU100</b>\n"
             msg += f"├ Periyot: <b>{sig['Periyot']}</b>\n"
@@ -207,21 +210,18 @@ def run_full_scan():
             msg += f"└ <a href='{sig['Link']}'>TradingView Grafiği Aç</a>\n\n"
         send_telegram(msg)
     else:
-        st.info(f"Son Tarama ({datetime.now(TZ).strftime('%H:%M:%S')}): Kesişim bulunamadı.")
+        st.info(f"Son Tarama ({datetime.now(TZ).strftime('%H:%M:%S')}): LRC 300/300 Band kesişimi bulunamadı.")
 
 # ==================== STREAMLIT ARAYÜZÜ ====================
-st.set_page_config(page_title="BIST Rasyo LRC Kalıcı Tarayıcı", page_icon="🟢", layout="wide")
+st.set_page_config(page_title="BIST Rasyo LRC 7/24 Band Tarayıcı", page_icon="📈", layout="wide")
 
-st.title("🟢 BIST Rasyo LRC Tam Bağımsız Oto Tarayıcı")
-st.caption("UptimeRobot Tetiklemeli | Sayfa Kapalı Olsa Bile Sen Durdurana Kadar Arka Planda Çalışır")
+st.title("📈 BIST Rasyo LRC 300/300 Band 7/24 OTO Tarayıcı")
+st.caption("7/24 Kesintisiz Çalışır | Sayfa Kapalı Olsa Bile Sen Durdurana Kadar Arka Planda Taramaya Devam Eder")
 
-# MOUT OTO REFRESH (Açık sayfada 15 dakikada bir görsel yeniler)
 st_autorefresh(interval=15 * 60 * 1000, key="screen_reload")
 
-# MEVCUT DURUMU OKU
 current_status = get_scan_status()
 
-# PANEL
 col1, col2 = st.columns([1, 1])
 
 with col1:
@@ -236,16 +236,9 @@ with col2:
 
 st.divider()
 
-# DURUM BİLGİSİ EKRANI
 if current_status:
-    st.success("🟢 **OTOMATİK TARAMA SİSTEMİ AKTİF!** (Siteyi kapatsan bile UptimeRobot ping attıkça tarama çalışır ve Telegram'a atar.)")
+    st.success("🟢 **7/24 OTOMATİK TARAMA AKTİF!** (UptimeRobot ping attıkça tarama çalışır ve kesişimleri Telegram'a iletir.)")
+    with st.spinner("LRC 300/300 Band Kesişimleri Taranıyor..."):
+        run_full_scan()
 else:
     st.error("🔴 **OTOMATİK TARAMA DURDURULDU.** (Arka planda hiçbir işlem yapılmıyor.)")
-
-# OTOMATİK ÇALIŞTIRMA MANTIĞI (UptimeRobot ping attığında burası tetiklenir)
-if current_status:
-    if is_bist_open():
-        with st.spinner("Arka Plan Taraması Yapılıyor..."):
-            run_full_scan()
-    else:
-        st.warning("⏳ Borsa kapalı olduğu için tarama pas geçildi (Sadece Hafta İçi 10:00 - 18:05).")
