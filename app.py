@@ -8,7 +8,7 @@ import screener
 st.set_page_config(page_title="Şort Sıkışması Tarayıcı", layout="wide")
 
 st.title("📉 Tahmini Şort Likidasyon Kümesi Tarayıcısı")
-st.caption("🔧 Kod sürümü: v4-score-diagnostics (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
+st.caption("🔧 Kod sürümü: v5-stock-filter-and-recent-window (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
 
 st.markdown("""
 Bu araç, Coinglass'ın **ücretli** likidasyon haritası verisi yerine,
@@ -26,7 +26,12 @@ with st.sidebar:
     st.header("Ayarlar")
     max_symbols = st.slider("Taranacak maksimum coin sayısı", 10, 400, 60, step=10)
     kline_limit = st.select_slider("Geçmiş veri uzunluğu (gün)", options=[200, 365, 500, 1000], value=500)
-    min_score = st.slider("Minimum tükenme skoru", 0, 100, 60)
+    cluster_window = st.slider(
+        "Küme analizi penceresi (gün)", 30, 200, 90, step=10,
+        help="Şort likidasyon kümeleri bu son N günlük hareketten hesaplanır. "
+             "Küçük değer = güncel sıkışmaya daha duyarlı, büyük değer = daha 'yıllık harita' gibi."
+    )
+    min_score = st.slider("Minimum tükenme skoru", 0, 100, 30)
     run_button = st.button("🔍 Taramayı Başlat", type="primary")
 
 if "scan_results" not in st.session_state:
@@ -47,12 +52,18 @@ if run_button:
         st.stop()
 
     st.info(f"Aktif veri kaynağı: **{active_source.upper()}**")
+    last_errors = api.get_last_errors()
+    if last_errors:
+        with st.expander("Diğer kaynaklar neden atlandı? (teşhis)"):
+            for src, err in last_errors.items():
+                st.text(f"{src}: {err}")
     progress_bar = st.progress(0, text="Taranıyor...")
 
     def _progress(i, total, sym):
         progress_bar.progress(i / total, text=f"Taranıyor: {sym} ({i}/{total})")
 
-    results = screener.run_scan(symbols, kline_limit=kline_limit, progress_callback=_progress)
+    results = screener.run_scan(symbols, kline_limit=kline_limit, cluster_window=cluster_window,
+                                 progress_callback=_progress)
     st.session_state.scan_results = results
     progress_bar.empty()
     st.success(f"Tarama tamamlandı. {len(results)} coin analiz edildi.")
