@@ -8,6 +8,7 @@ import screener
 st.set_page_config(page_title="Şort Sıkışması Tarayıcı", layout="wide")
 
 st.title("📉 Tahmini Şort Likidasyon Kümesi Tarayıcısı")
+st.caption("🔧 Kod sürümü: v3-multiexchange-fallback (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
 
 st.markdown("""
 Bu araç, Coinglass'ın **ücretli** likidasyon haritası verisi yerine,
