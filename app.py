@@ -1,244 +1,104 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-import numpy as np
-import requests
-import json
-import os
-from datetime import datetime
-import pytz
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from streamlit_autorefresh import st_autorefresh
-import warnings
-warnings.filterwarnings("ignore")
+import plotly.graph_objects as go
 
-st.cache_data.clear()
+import data_fetcher as api
+import screener
 
-# ==================== AYARLAR & STATE DOSYASI ====================
-STATE_FILE = "scan_state.json"
+st.set_page_config(page_title="Şort Sıkışması Tarayıcı", layout="wide")
 
-TELEGRAM_TOKEN = "8770184809:AAHskJ8stv-BfC9DVHuKKX-ooekSf5zskV4"
-TELEGRAM_CHAT_ID = "-1003546836920"
+st.title("📉 Tahmini Şort Likidasyon Kümesi Tarayıcısı")
 
-LRC_LENGTH = 300
-MAX_WORKERS = 6
-INDEX_SYMBOL = "XU100.IS"
+st.markdown("""
+Bu araç, Coinglass'ın **ücretli** likidasyon haritası verisi yerine,
+**Binance Futures'ın ücretsiz herkese açık verilerinden** (fiyat + hacim)
+şort likidasyon kümelerini **tahmin eder**. Coinglass ile birebir aynı
+sonucu vermez — amaç, "şort sıkışması tükeniyor mu?" sorusuna dair
+bir ön filtre / fikir üretme aracı sağlamaktır.
 
-TZ = pytz.timezone("Europe/Istanbul")
+**Mantık:** Fiyat yükselirken art arda şort likidasyonlarını temizliyorsa
+ve geride, mevcut fiyatın hemen üstünde küçük/ince bir küme kalmışsa,
+"tükenme skoru" yükselir — CAP örneğinde anlattığınız senaryo budur.
+""")
 
-TIMEFRAMES_15M = {
-    "15m": None, "30m": "30min", "45m": "45min",
-    "1h": "1h", "2h": "2h", "3h": "3h", "4h": "4h",
-    "5h": "5h", "8h": "8h", "12h": "12h", "13h": "13h"
-}
+with st.sidebar:
+    st.header("Ayarlar")
+    max_symbols = st.slider("Taranacak maksimum coin sayısı", 10, 400, 60, step=10)
+    kline_limit = st.select_slider("Geçmiş veri uzunluğu (gün)", options=[200, 365, 500, 1000], value=500)
+    min_score = st.slider("Minimum tükenme skoru", 0, 100, 60)
+    run_button = st.button("🔍 Taramayı Başlat", type="primary")
 
-DAILY_BAR_COUNTS = {
-    "1d": 1, "2d": 2, "3d": 3, "4d": 4, 
-    "5d": 5, "6d": 6, "7d": 7
-}
+if "scan_results" not in st.session_state:
+    st.session_state.scan_results = []
 
-TIMEFRAMES_HIGHER = {
-    "1wk": "1W", "1mo": "1ME"
-}
+if run_button:
+    with st.spinner("Sembol listesi alınıyor..."):
+        all_symbols = api.get_usdt_perpetual_symbols()
+        symbols = all_symbols[:max_symbols]
 
-BIST_SYMBOLS = [
-    "AYEN.IS", "THYAO.IS", "GARAN.IS", "AKBNK.IS", "YKBNK.IS", "ISCTR.IS",
-    "EREGL.IS", "KCHOL.IS", "SAHOL.IS", "TUPRS.IS", "SISE.IS", "ASELS.IS",
-    "BIMAS.IS", "FROTO.IS", "TOASO.IS", "SASA.IS", "PGSUS.IS", "HEKTS.IS"
-]
+    progress_bar = st.progress(0, text="Taranıyor...")
 
-# ==================== DURUM (STATE) YÖNETİMİ ====================
-def get_scan_status() -> bool:
-    if not os.path.exists(STATE_FILE):
-        return False
-    try:
-        with open(STATE_FILE, "r") as f:
-            data = json.load(f)
-            return data.get("is_active", False)
-    except:
-        return False
+    def _progress(i, total, sym):
+        progress_bar.progress(i / total, text=f"Taranıyor: {sym} ({i}/{total})")
 
-def set_scan_status(status: bool):
-    with open(STATE_FILE, "w") as f:
-        json.dump({"is_active": status}, f)
+    results = screener.run_scan(symbols, kline_limit=kline_limit, progress_callback=_progress)
+    st.session_state.scan_results = results
+    progress_bar.empty()
+    st.success(f"Tarama tamamlandı. {len(results)} coin analiz edildi.")
 
-# ==================== YARDIMCI FONKSİYONLAR ====================
-def send_telegram(message: str):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML", "disable_web_page_preview": True}
-        requests.post(url, json=payload, timeout=10)
-    except:
-        pass
+results = st.session_state.scan_results
 
-def calculate_linreg_fast(series: pd.Series, length: int) -> pd.Series:
-    """TradingView ta.linreg C++ Birebir Hesaplama Motoru"""
-    if len(series) < length:
-        return pd.Series(index=series.index, dtype=float)
-    x = np.arange(length, dtype=np.float64)
-    x_mean = x.mean()
-    x_dev = x - x_mean
-    x_var = (x_dev ** 2).sum()
-    vals = series.values.astype(np.float64)
-    result = np.full(len(vals), np.nan, dtype=np.float64)
-    for i in range(length - 1, len(vals)):
-        y_window = vals[i - length + 1 : i + 1]
-        if np.isnan(y_window).any():
-            continue
-        y_mean = y_window.mean()
-        slope = (x_dev * (y_window - y_mean)).sum() / x_var
-        intercept = y_mean - slope * x_mean
-        result[i] = slope * (length - 1) + intercept
-    return pd.Series(result, index=series.index)
+if results:
+    table_rows = [{k: v for k, v in r.items() if k not in ("long_clusters", "short_clusters", "ohlcv")}
+                   for r in results]
+    df_table = pd.DataFrame(table_rows).sort_values("exhaustion_score", ascending=False)
+    df_filtered = df_table[df_table["exhaustion_score"] >= min_score]
 
-def resample_tradingview_daily_strict(df: pd.DataFrame, days: int) -> pd.DataFrame:
-    if days == 1 or len(df) == 0:
-        return df
-    df_sorted = df.sort_index().copy()
-    total_bars = len(df_sorted)
-    remainder = total_bars % days
-    if remainder != 0:
-        df_sorted = df_sorted.iloc[remainder:]
-    group_ids = np.arange(len(df_sorted)) // days
-    return df_sorted.groupby(group_ids).agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'})
+    st.subheader(f"Sonuçlar ({len(df_filtered)} coin, skor ≥ {min_score})")
+    st.dataframe(df_filtered, use_container_width=True, hide_index=True)
 
-def detect_lrc_300_300_bands_cross(df: pd.DataFrame, tf_name: str, length: int = 300):
-    """LRC 300/300 ORTA-ÜST BAND İLE ORTA-ALT BAND KESİŞİM MOTORU"""
-    lookback = 8 if tf_name in ["15m", "30m", "45m"] else (4 if tf_name in ["1h", "2h", "3h", "4h", "5h"] else 2)
-    
-    if len(df) < length + lookback + 1:
-        return None
-    
-    # High ve Low Fiyatlarından LRC 300 Hesaplamaları
-    lrc_mid_upper = calculate_linreg_fast(df["High"], length)
-    lrc_mid_lower = calculate_linreg_fast(df["Low"], length)
-    
-    for i in range(1, lookback + 1):
-        u_curr, l_curr = lrc_mid_upper.iloc[-i], lrc_mid_lower.iloc[-i]
-        u_prev, l_prev = lrc_mid_upper.iloc[-i-1], lrc_mid_lower.iloc[-i-1]
-        
-        if pd.isna(u_curr) or pd.isna(l_curr) or pd.isna(u_prev) or pd.isna(l_prev):
-            continue
-            
-        bar_diff = i - 1
-        bar_label = "ANLIK CANLI BAR" if bar_diff == 0 else f"{bar_diff} Bar Önce"
-        
-        # Orta-Alt Bandın, Orta-Üst Bandı YUKARI Kesmesi (YEŞİL)
-        if l_prev <= u_prev and l_curr > u_curr:
-            return f"YEŞİL 🟢 ({bar_label})"
-            
-        # Orta-Alt Bandın, Orta-Üst Bandı AŞAĞI Kesmesi (TURUNCU)
-        if l_prev >= u_prev and l_curr < u_curr:
-            return f"TURUNCU 🟠 ({bar_label})"
-            
-    return None
+    if not df_filtered.empty:
+        chosen = st.selectbox("Detay grafiği görmek için coin seçin:", df_filtered["symbol"].tolist())
+        r = next(x for x in results if x["symbol"] == chosen)
 
-def build_ratio_df(stock_df: pd.DataFrame, index_df: pd.DataFrame) -> pd.DataFrame:
-    combined = pd.concat([stock_df, index_df], axis=1, keys=['stock', 'index'], join='inner').dropna()
-    if combined.empty: return pd.DataFrame()
-    ratio_df = pd.DataFrame(index=combined.index)
-    ratio_df['Close'] = combined['stock']['Close'] / combined['index']['Close']
-    ratio_df['Open']  = combined['stock']['Open'] / combined['index']['Open']
-    ratio_df['High']  = combined['stock']['High'] / combined['index']['High']
-    ratio_df['Low']   = combined['stock']['Low'] / combined['index']['Low']
-    return ratio_df
+        df = r["ohlcv"]
+        short_clusters = r["short_clusters"]
 
-def scan_symbol_ratio(symbol: str, df_index_15m: pd.DataFrame, df_index_1d: pd.DataFrame):
-    results = []
-    try:
-        clean_symbol = symbol.replace(".IS", "")
-        ticker = yf.Ticker(symbol)
-        
-        df_stock_15m = ticker.history(period="60d", interval="15m", auto_adjust=True)
-        if not df_stock_15m.empty:
-            ratio_15m = build_ratio_df(df_stock_15m, df_index_15m)
-            if not ratio_15m.empty:
-                for tf_name, rule in TIMEFRAMES_15M.items():
-                    df_tf = ratio_15m if rule is None else ratio_15m.resample(rule, origin='start_day').agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}).dropna()
-                    signal = detect_lrc_300_300_bands_cross(df_tf, tf_name, LRC_LENGTH)
-                    if signal:
-                        tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
-                        results.append({"Hisse": clean_symbol, "RASYON": f"{clean_symbol}/XU100", "Periyot": tf_name, "Sinyal Durumu": signal, "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 6), "Link": tv_url})
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(
+            x=df["open_time"], open=df["open"], high=df["high"],
+            low=df["low"], close=df["close"], name=chosen
+        ))
+        max_w = short_clusters["weight"].max() or 1
+        for _, row in short_clusters.iterrows():
+            if row["weight"] <= 0:
+                continue
+            opacity = min(0.9, 0.15 + 0.75 * (row["weight"] / max_w))
+            fig.add_hrect(
+                y0=row["price_low"], y1=row["price_high"],
+                fillcolor="orange", opacity=opacity, line_width=0
+            )
+        fig.add_hline(y=r["price"], line_dash="dash", line_color="white",
+                       annotation_text=f"Güncel Fiyat: {r['price']}")
 
-        df_stock_1d = ticker.history(period="10y", interval="1d", auto_adjust=True)
-        if not df_stock_1d.empty:
-            ratio_1d = build_ratio_df(df_stock_1d, df_index_1d)
-            if not ratio_1d.empty:
-                for tf_name, bar_count in DAILY_BAR_COUNTS.items():
-                    df_tf = resample_tradingview_daily_strict(ratio_1d, bar_count)
-                    signal = detect_lrc_300_300_bands_cross(df_tf, tf_name, LRC_LENGTH)
-                    if signal:
-                        tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
-                        results.append({"Hisse": clean_symbol, "RASYON": f"{clean_symbol}/XU100", "Periyot": tf_name, "Sinyal Durumu": signal, "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 6), "Link": tv_url})
+        fig.update_layout(
+            title=f"{chosen} — Tahmini Şort Likidasyon Kümeleri (turuncu bantlar)",
+            height=650, xaxis_rangeslider_visible=False
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-                for tf_name, rule in TIMEFRAMES_HIGHER.items():
-                    df_tf = ratio_1d.resample(rule, origin='start_day').agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}).dropna()
-                    signal = detect_lrc_300_300_bands_cross(df_tf, tf_name, LRC_LENGTH)
-                    if signal:
-                        tv_url = f"https://www.tradingview.com/chart/?symbol=BIST:{clean_symbol}/BIST:XU100_CFNNTLTL"
-                        results.append({"Hisse": clean_symbol, "RASYON": f"{clean_symbol}/XU100", "Periyot": tf_name, "Sinyal Durumu": signal, "Rasyo Fiyat": round(df_tf["Close"].iloc[-1], 6), "Link": tv_url})
-    except:
-        pass
-    return results
-
-def run_full_scan():
-    idx_ticker = yf.Ticker(INDEX_SYMBOL)
-    df_index_15m = idx_ticker.history(period="60d", interval="15m", auto_adjust=True)
-    df_index_1d = idx_ticker.history(period="10y", interval="1d", auto_adjust=True)
-
-    if df_index_15m.empty or df_index_1d.empty:
-        st.error("Endeks verisi alınamadı!")
-        return
-
-    all_signals = []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(scan_symbol_ratio, sym, df_index_15m, df_index_1d): sym for sym in BIST_SYMBOLS}
-        for future in as_completed(futures):
-            res = future.result()
-            if res: all_signals.extend(res)
-    
-    if all_signals:
-        df_res = pd.DataFrame(all_signals)
-        st.success(f"Son Tarama ({datetime.now(TZ).strftime('%H:%M:%S')}): {len(all_signals)} adet kesişim bulundu!")
-        st.dataframe(df_res, use_container_width=True)
-        
-        msg = f"<b>🤖 BIST RASYO LRC 300/300 BAND KESİŞİM BİLDİRİMİ ({datetime.now(TZ).strftime('%H:%M')})</b>\n\n"
-        for sig in all_signals:
-            msg += f"<b>{sig['Hisse']} / XU100</b>\n"
-            msg += f"├ Periyot: <b>{sig['Periyot']}</b>\n"
-            msg += f"├ Sinyal: <b>{sig['Sinyal Durumu']}</b>\n"
-            msg += f"└ <a href='{sig['Link']}'>TradingView Grafiği Aç</a>\n\n"
-        send_telegram(msg)
-    else:
-        st.info(f"Son Tarama ({datetime.now(TZ).strftime('%H:%M:%S')}): LRC 300/300 Band kesişimi bulunamadı.")
-
-# ==================== STREAMLIT ARAYÜZÜ ====================
-st.set_page_config(page_title="BIST Rasyo LRC 7/24 Band Tarayıcı", page_icon="📈", layout="wide")
-
-st.title("📈 BIST Rasyo LRC 300/300 Band 7/24 OTO Tarayıcı")
-st.caption("7/24 Kesintisiz Çalışır | Sayfa Kapalı Olsa Bile Sen Durdurana Kadar Arka Planda Taramaya Devam Eder")
-
-st_autorefresh(interval=15 * 60 * 1000, key="screen_reload")
-
-current_status = get_scan_status()
-
-col1, col2 = st.columns([1, 1])
-
-with col1:
-    if st.button("▶️ OTOMATİK TARAMAYI BAŞLAT", type="primary", use_container_width=True):
-        set_scan_status(True)
-        st.rerun()
-
-with col2:
-    if st.button("⏹️ OTOMATİK TARAMAYI DURDUR", use_container_width=True):
-        set_scan_status(False)
-        st.rerun()
-
-st.divider()
-
-if current_status:
-    st.success("🟢 **7/24 OTOMATİK TARAMA AKTİF!** (UptimeRobot ping attıkça tarama çalışır ve kesişimleri Telegram'a iletir.)")
-    with st.spinner("LRC 300/300 Band Kesişimleri Taranıyor..."):
-        run_full_scan()
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Tükenme Skoru", r["exhaustion_score"])
+        c2.metric("Temizlenen Şort Likidasyon %", f"{r['short_liq_consumed_pct']}%")
+        c3.metric("Yakında Kalan Şort Likidasyon %", f"{r['short_liq_remaining_near_pct']}%")
+        c4.metric("Funding Rate", f"%{r['funding_rate_pct']}" if r['funding_rate_pct'] is not None else "N/A")
 else:
-    st.error("🔴 **OTOMATİK TARAMA DURDURULDU.** (Arka planda hiçbir işlem yapılmıyor.)")
+    st.info("Taramayı başlatmak için soldaki 'Taramayı Başlat' butonuna basın.")
+
+st.markdown("---")
+st.caption(
+    "⚠️ Bu araç yatırım tavsiyesi değildir. Likidasyon kümeleri gerçek OI/order-flow "
+    "verisi yerine fiyat+hacim üzerinden istatistiksel bir TAHMİNDİR. Coinglass'ın "
+    "gösterdiği haritalarla birebir örtüşmeyebilir. Kaldıraçlı işlemler yüksek risk "
+    "içerir, kendi araştırmanızı yapın."
+)
