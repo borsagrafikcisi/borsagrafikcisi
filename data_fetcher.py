@@ -134,13 +134,13 @@ def _detect_source(force=False):
             _ACTIVE_SOURCE = name
             return name
         except Exception as e:
-            _LAST_ERRORS[name] = str(e)
+            _LAST_ERRORS[name] = f"{type(e).__name__}: {e}"
             continue
 
-    detail = " | ".join(f"{k}: {v}" for k, v in _LAST_ERRORS.items())
+    detail = "\n".join(f"- {k}: {v}" for k, v in _LAST_ERRORS.items())
     raise DataSourceError(
-        f"Hiçbir borsa API'sine erişilemedi (barındırma sunucusu engellenmiş olabilir). "
-        f"Denenen kaynaklar ve hatalar: {detail}"
+        "Hiçbir borsa API'sine erişilemedi (barındırma sunucusu engellenmiş olabilir).\n"
+        f"Denenen kaynaklar ve hatalar:\n{detail}"
     )
 
 
