@@ -8,6 +8,8 @@ import pandas as pd
 import data_fetcher as api
 import liquidation_model as liq
 
+MODULE_VERSION = "screener-v5"
+
 
 def compute_rsi(series, period=14):
     delta = series.diff()
