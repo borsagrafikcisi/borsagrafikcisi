@@ -8,7 +8,8 @@ import screener
 st.set_page_config(page_title="Şort Sıkışması Tarayıcı", layout="wide")
 
 st.title("📉 Tahmini Şort Likidasyon Kümesi Tarayıcısı")
-st.caption("🔧 Kod sürümü: v5-stock-filter-and-recent-window (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
+st.caption("🔧 Kod sürümü: v6-module-version-check (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
+st.caption(f"📦 Modül sürümleri — app: v6 | {api.MODULE_VERSION} | {screener.MODULE_VERSION}")
 
 st.markdown("""
 Bu araç, Coinglass'ın **ücretli** likidasyon haritası verisi yerine,
