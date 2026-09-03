@@ -40,9 +40,9 @@ if run_button:
     except Exception as e:
         st.error(
             "Hiçbir borsa API'sine erişilemedi. Barındırma sunucunuzun IP'si "
-            "engellenmiş olabilir (örn. Binance ABD sunucularını engeller).\n\n"
-            f"Detay: {e}"
+            "engellenmiş olabilir (örn. Binance/Bybit/OKX ABD sunucularını engeller)."
         )
+        st.code(str(e))
         st.stop()
 
     st.info(f"Aktif veri kaynağı: **{active_source.upper()}**")
