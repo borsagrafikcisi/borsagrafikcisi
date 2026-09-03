@@ -8,7 +8,7 @@ import screener
 st.set_page_config(page_title="Şort Sıkışması Tarayıcı", layout="wide")
 
 st.title("📉 Tahmini Şort Likidasyon Kümesi Tarayıcısı")
-st.caption("🔧 Kod sürümü: v3-multiexchange-fallback (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
+st.caption("🔧 Kod sürümü: v4-score-diagnostics (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
 
 st.markdown("""
 Bu araç, Coinglass'ın **ücretli** likidasyon haritası verisi yerine,
@@ -63,9 +63,18 @@ if results:
     table_rows = [{k: v for k, v in r.items() if k not in ("long_clusters", "short_clusters", "ohlcv")}
                    for r in results]
     df_table = pd.DataFrame(table_rows).sort_values("exhaustion_score", ascending=False)
+
+    st.subheader("Tüm taranan coinler (skora göre sıralı — eşik uygulanmadan)")
+    st.caption("Eşiği doğru kalibre edebilmeniz için skor dağılımının tamamı burada.")
+    st.dataframe(df_table.head(20), use_container_width=True, hide_index=True)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("En yüksek skor", df_table["exhaustion_score"].max())
+    c2.metric("Ortalama skor", round(df_table["exhaustion_score"].mean(), 1))
+    c3.metric("En düşük skor", df_table["exhaustion_score"].min())
+
     df_filtered = df_table[df_table["exhaustion_score"] >= min_score]
 
-    st.subheader(f"Sonuçlar ({len(df_filtered)} coin, skor ≥ {min_score})")
+    st.subheader(f"Eşiği geçenler (skor ≥ {min_score})")
     st.dataframe(df_filtered, use_container_width=True, hide_index=True)
 
     if not df_filtered.empty:
