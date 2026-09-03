@@ -17,14 +17,21 @@ def compute_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def analyze_symbol(symbol, kline_limit=500):
+def analyze_symbol(symbol, kline_limit=500, cluster_window=90):
     df = api.get_klines(symbol, interval="1d", limit=kline_limit)
     if df.empty or len(df) < 30:
         return None
 
     current_price = df["close"].iloc[-1]
 
-    long_clusters, short_clusters = liq.estimate_liquidation_clusters(df)
+    # Cluster estimation is windowed to the recent leg (default ~90 days),
+    # not the full history. A full year of history dilutes the signal —
+    # the squeeze pattern you're looking for plays out over weeks, so
+    # comparing it against a year of unrelated price action buries it.
+    window = min(cluster_window, len(df))
+    cluster_df = df.tail(window)
+
+    long_clusters, short_clusters = liq.estimate_liquidation_clusters(cluster_df)
     exhaustion = liq.squeeze_exhaustion_score(short_clusters, current_price)
 
     try:
@@ -55,11 +62,11 @@ def analyze_symbol(symbol, kline_limit=500):
     }
 
 
-def run_scan(symbols, kline_limit=500, progress_callback=None):
+def run_scan(symbols, kline_limit=500, cluster_window=90, progress_callback=None):
     results = []
     for i, sym in enumerate(symbols):
         try:
-            r = analyze_symbol(sym, kline_limit=kline_limit)
+            r = analyze_symbol(sym, kline_limit=kline_limit, cluster_window=cluster_window)
             if r:
                 results.append(r)
         except Exception:
