@@ -89,10 +89,40 @@ def _bybit_funding(symbol):
 
 
 # -------------------------------------------------------------------- OKX --
+# OKX also lists tokenized US-stock perpetuals under the same SWAP
+# instrument type and "TICKER-USDT-SWAP" naming as real crypto pairs.
+# We exclude the known stock tickers so the screener stays crypto-only.
+_STOCK_TICKER_DENYLIST = {
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "TSLA", "META", "NVDA", "NFLX",
+    "AVGO", "COST", "ADBE", "INTC", "AMD", "CSCO", "PEP", "TXN", "QCOM",
+    "CMCSA", "HON", "INTU", "AMAT", "BKNG", "ISRG", "VRTX", "GILD", "ADP",
+    "MDLZ", "REGN", "LRCX", "PANW", "SNPS", "CDNS", "ORLY", "MU", "KLAC",
+    "MAR", "CTAS", "PYPL", "MRVL", "ABNB", "WDAY", "CRWD", "FTNT", "DXCM",
+    "PCAR", "ODFL", "ROST", "KDP", "EXC", "XEL", "CSGP", "IDXX", "BIIB",
+    "ILMN", "MNST", "DLTR", "WBA", "LULU", "EA", "VRSK", "ANSS", "CTSH",
+    "FAST", "PAYX", "CPRT", "VRSN", "SIRI", "MTCH", "ENPH", "ALGN", "MELI",
+    "JPM", "V", "MA", "WMT", "KO", "MCD", "NKE", "HD", "UNH", "JNJ", "PG",
+    "XOM", "CVX", "BAC", "WFC", "GS", "MS", "C", "T", "VZ", "PFE", "ABBV",
+    "TMO", "IBM", "UPS", "LMT", "RTX", "SPGI", "BLK", "SCHW", "AXP", "GM",
+    "F", "UBER", "LYFT", "SNAP", "PINS", "SQ", "SHOP", "ROKU", "ZM",
+    "DOCU", "SNOW", "PLTR", "COIN", "RIVN", "LCID", "NIO", "BABA", "DIS",
+    "BA", "GE", "MMM", "CAT", "ORCL", "CRM", "BE",
+}
+
+
 def _okx_symbols():
     data = _get(f"{OKX_BASE}/api/v5/public/instruments", {"instType": "SWAP"})
     items = data["data"]
-    return sorted([i["instId"] for i in items if i["instId"].endswith("-USDT-SWAP") and i.get("state") == "live"])
+    symbols = []
+    for i in items:
+        inst_id = i["instId"]
+        if not inst_id.endswith("-USDT-SWAP") or i.get("state") != "live":
+            continue
+        base = inst_id.split("-")[0]
+        if base in _STOCK_TICKER_DENYLIST:
+            continue
+        symbols.append(inst_id)
+    return sorted(symbols)
 
 
 def _okx_klines(symbol, interval, limit):
@@ -147,6 +177,11 @@ def _detect_source(force=False):
 def get_active_source():
     """Which exchange is currently being used ('binance' / 'bybit' / 'okx')."""
     return _detect_source()
+
+
+def get_last_errors():
+    """Errors from sources that failed before the active source succeeded (diagnostic)."""
+    return dict(_LAST_ERRORS)
 
 
 def get_usdt_perpetual_symbols():
