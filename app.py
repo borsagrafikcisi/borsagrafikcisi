@@ -37,7 +37,7 @@ if run_button:
             all_symbols = api.get_usdt_perpetual_symbols()
             active_source = api.get_active_source()
             symbols = all_symbols[:max_symbols]
-    except api.DataSourceError as e:
+    except Exception as e:
         st.error(
             "Hiçbir borsa API'sine erişilemedi. Barındırma sunucunuzun IP'si "
             "engellenmiş olabilir (örn. Binance ABD sunucularını engeller).\n\n"
