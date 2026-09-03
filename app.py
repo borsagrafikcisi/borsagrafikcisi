@@ -32,10 +32,20 @@ if "scan_results" not in st.session_state:
     st.session_state.scan_results = []
 
 if run_button:
-    with st.spinner("Sembol listesi alınıyor..."):
-        all_symbols = api.get_usdt_perpetual_symbols()
-        symbols = all_symbols[:max_symbols]
+    try:
+        with st.spinner("Sembol listesi alınıyor..."):
+            all_symbols = api.get_usdt_perpetual_symbols()
+            active_source = api.get_active_source()
+            symbols = all_symbols[:max_symbols]
+    except api.DataSourceError as e:
+        st.error(
+            "Hiçbir borsa API'sine erişilemedi. Barındırma sunucunuzun IP'si "
+            "engellenmiş olabilir (örn. Binance ABD sunucularını engeller).\n\n"
+            f"Detay: {e}"
+        )
+        st.stop()
 
+    st.info(f"Aktif veri kaynağı: **{active_source.upper()}**")
     progress_bar = st.progress(0, text="Taranıyor...")
 
     def _progress(i, total, sym):
