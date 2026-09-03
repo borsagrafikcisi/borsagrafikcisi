@@ -25,6 +25,8 @@ OKX_INTERVAL_MAP = {"1d": "1D", "4h": "4H", "1h": "1H"}
 _ACTIVE_SOURCE = None
 _LAST_ERRORS = {}
 
+MODULE_VERSION = "data_fetcher-v5"
+
 
 class DataSourceError(Exception):
     pass
