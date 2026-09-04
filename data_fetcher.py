@@ -1,16 +1,17 @@
 """
-Multi-exchange USDT-M perpetual futures public data wrapper.
+5-exchange USDT-M perpetual futures public data wrapper.
 
-Some cloud hosts (Streamlit Community Cloud runs on US-based AWS
-servers) get blocked by Binance's futures API for legal/regional
-reasons, even though the endpoints are "public". To keep the app
-working regardless of where it's hosted, this module tries Binance
-first and automatically falls back to Bybit, then OKX, if a source
-fails. Whichever source responds first becomes the "active source"
-for the rest of the session.
+Exchanges: Binance, Bybit, OKX, Bitget, Gate.io — all public market-data
+endpoints, no API key needed. Used to approximate a Coinglass-style
+multi-exchange liquidation cluster map by pulling the same coin's data
+from as many of these 5 as are reachable/listed, and letting the caller
+(liquidation_model.estimate_liquidation_clusters_multi) sum them.
 
-No API key is required for any of these — all are public market-data
-endpoints.
+NOTE: Bitget and Gate.io wrappers were written from memory of their public
+API shapes and could NOT be live-tested in this environment (no outbound
+network access here). If they error out, use the diagnostic
+`debug_fetch_klines()` function from the app's test panel to see the raw
+error and we can patch field names quickly.
 """
 import requests
 import pandas as pd
@@ -18,14 +19,18 @@ import pandas as pd
 BINANCE_BASE = "https://fapi.binance.com"
 BYBIT_BASE = "https://api.bybit.com"
 OKX_BASE = "https://www.okx.com"
+BITGET_BASE = "https://api.bitget.com"
+GATEIO_BASE = "https://api.gateio.ws"
+
+EXCHANGES = ["binance", "bybit", "okx", "bitget", "gateio"]
+MODULE_VERSION = "data_fetcher-v7-multiexchange"
 
 BYBIT_INTERVAL_MAP = {"1d": "D", "4h": "240", "1h": "60"}
 OKX_INTERVAL_MAP = {"1d": "1D", "4h": "4H", "1h": "1H"}
+BITGET_INTERVAL_MAP = {"1d": "1D", "4h": "4H", "1h": "1H"}
+GATEIO_INTERVAL_MAP = {"1d": "1d", "4h": "4h", "1h": "1h"}
 
-_ACTIVE_SOURCE = None
 _LAST_ERRORS = {}
-
-MODULE_VERSION = "data_fetcher-v5"
 
 
 class DataSourceError(Exception):
@@ -39,61 +44,19 @@ def _get(url, params=None, timeout=10):
     return r.json()
 
 
-# ---------------------------------------------------------------- Binance --
-def _binance_symbols():
-    data = _get(f"{BINANCE_BASE}/fapi/v1/exchangeInfo")
-    return sorted([
-        s["symbol"] for s in data["symbols"]
-        if s["quoteAsset"] == "USDT" and s["contractType"] == "PERPETUAL" and s["status"] == "TRADING"
-    ])
+def symbol_for(exchange, base):
+    base = base.upper()
+    if exchange in ("binance", "bybit", "bitget"):
+        return f"{base}USDT"
+    if exchange == "okx":
+        return f"{base}-USDT-SWAP"
+    if exchange == "gateio":
+        return f"{base}_USDT"
+    raise ValueError(f"Unknown exchange: {exchange}")
 
 
-def _binance_klines(symbol, interval, limit):
-    data = _get(f"{BINANCE_BASE}/fapi/v1/klines", {"symbol": symbol, "interval": interval, "limit": limit})
-    cols = ["open_time", "open", "high", "low", "close", "volume", "close_time",
-            "quote_volume", "trades", "taker_buy_base", "taker_buy_quote", "ignore"]
-    df = pd.DataFrame(data, columns=cols)
-    for c in ["open", "high", "low", "close", "volume", "quote_volume"]:
-        df[c] = df[c].astype(float)
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-    return df[["open_time", "open", "high", "low", "close", "volume", "quote_volume"]]
-
-
-def _binance_funding(symbol):
-    data = _get(f"{BINANCE_BASE}/fapi/v1/premiumIndex", {"symbol": symbol})
-    return {"mark_price": float(data["markPrice"]), "last_funding_rate": float(data["lastFundingRate"])}
-
-
-# ------------------------------------------------------------------ Bybit --
-def _bybit_symbols():
-    data = _get(f"{BYBIT_BASE}/v5/market/instruments-info", {"category": "linear"})
-    items = data["result"]["list"]
-    return sorted([i["symbol"] for i in items if i["symbol"].endswith("USDT") and i.get("status") == "Trading"])
-
-
-def _bybit_klines(symbol, interval, limit):
-    biv = BYBIT_INTERVAL_MAP.get(interval, "D")
-    data = _get(f"{BYBIT_BASE}/v5/market/kline",
-                {"category": "linear", "symbol": symbol, "interval": biv, "limit": min(limit, 1000)})
-    rows = list(reversed(data["result"]["list"]))  # bybit returns newest first
-    df = pd.DataFrame(rows, columns=["open_time", "open", "high", "low", "close", "volume", "turnover"])
-    for c in ["open", "high", "low", "close", "volume", "turnover"]:
-        df[c] = df[c].astype(float)
-    df["open_time"] = pd.to_datetime(df["open_time"].astype("int64"), unit="ms")
-    df["quote_volume"] = df["turnover"]
-    return df[["open_time", "open", "high", "low", "close", "volume", "quote_volume"]]
-
-
-def _bybit_funding(symbol):
-    data = _get(f"{BYBIT_BASE}/v5/market/tickers", {"category": "linear", "symbol": symbol})
-    item = data["result"]["list"][0]
-    return {"mark_price": float(item["markPrice"]), "last_funding_rate": float(item["fundingRate"])}
-
-
-# -------------------------------------------------------------------- OKX --
-# OKX also lists tokenized US-stock perpetuals under the same SWAP
-# instrument type and "TICKER-USDT-SWAP" naming as real crypto pairs.
-# We exclude the known stock tickers so the screener stays crypto-only.
+# OKX also lists tokenized US-stock perpetuals under the same naming —
+# excluded so the screener stays crypto-only.
 _STOCK_TICKER_DENYLIST = {
     "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "TSLA", "META", "NVDA", "NFLX",
     "AVGO", "COST", "ADBE", "INTC", "AMD", "CSCO", "PEP", "TXN", "QCOM",
@@ -112,25 +75,62 @@ _STOCK_TICKER_DENYLIST = {
 }
 
 
-def _okx_symbols():
-    data = _get(f"{OKX_BASE}/api/v5/public/instruments", {"instType": "SWAP"})
-    items = data["data"]
-    symbols = []
-    for i in items:
-        inst_id = i["instId"]
-        if not inst_id.endswith("-USDT-SWAP") or i.get("state") != "live":
-            continue
-        base = inst_id.split("-")[0]
-        if base in _STOCK_TICKER_DENYLIST:
-            continue
-        symbols.append(inst_id)
-    return sorted(symbols)
+# ---------------------------------------------------------------- Binance --
+def _binance_klines(symbol, interval, limit):
+    data = _get(f"{BINANCE_BASE}/fapi/v1/klines", {"symbol": symbol, "interval": interval, "limit": limit})
+    cols = ["open_time", "open", "high", "low", "close", "volume", "close_time",
+            "quote_volume", "trades", "taker_buy_base", "taker_buy_quote", "ignore"]
+    df = pd.DataFrame(data, columns=cols)
+    for c in ["open", "high", "low", "close", "volume", "quote_volume"]:
+        df[c] = df[c].astype(float)
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+    return df[["open_time", "open", "high", "low", "close", "volume", "quote_volume"]]
 
 
+def _binance_funding(symbol):
+    data = _get(f"{BINANCE_BASE}/fapi/v1/premiumIndex", {"symbol": symbol})
+    return {"mark_price": float(data["markPrice"]), "last_funding_rate": float(data["lastFundingRate"])}
+
+
+def _binance_top_symbols(n):
+    data = _get(f"{BINANCE_BASE}/fapi/v1/ticker/24hr")
+    data = [d for d in data if d["symbol"].endswith("USDT")]
+    data.sort(key=lambda d: float(d.get("quoteVolume", 0) or 0), reverse=True)
+    return [d["symbol"][:-4] for d in data[: n * 2]]
+
+
+# ------------------------------------------------------------------ Bybit --
+def _bybit_klines(symbol, interval, limit):
+    biv = BYBIT_INTERVAL_MAP.get(interval, "D")
+    data = _get(f"{BYBIT_BASE}/v5/market/kline",
+                {"category": "linear", "symbol": symbol, "interval": biv, "limit": min(limit, 1000)})
+    rows = list(reversed(data["result"]["list"]))
+    df = pd.DataFrame(rows, columns=["open_time", "open", "high", "low", "close", "volume", "turnover"])
+    for c in ["open", "high", "low", "close", "volume", "turnover"]:
+        df[c] = df[c].astype(float)
+    df["open_time"] = pd.to_datetime(df["open_time"].astype("int64"), unit="ms")
+    df["quote_volume"] = df["turnover"]
+    return df[["open_time", "open", "high", "low", "close", "volume", "quote_volume"]]
+
+
+def _bybit_funding(symbol):
+    data = _get(f"{BYBIT_BASE}/v5/market/tickers", {"category": "linear", "symbol": symbol})
+    item = data["result"]["list"][0]
+    return {"mark_price": float(item["markPrice"]), "last_funding_rate": float(item["fundingRate"])}
+
+
+def _bybit_top_symbols(n):
+    data = _get(f"{BYBIT_BASE}/v5/market/tickers", {"category": "linear"})["result"]["list"]
+    data = [d for d in data if d["symbol"].endswith("USDT")]
+    data.sort(key=lambda d: float(d.get("turnover24h", 0) or 0), reverse=True)
+    return [d["symbol"][:-4] for d in data[: n * 2]]
+
+
+# -------------------------------------------------------------------- OKX --
 def _okx_klines(symbol, interval, limit):
     bar = OKX_INTERVAL_MAP.get(interval, "1D")
     data = _get(f"{OKX_BASE}/api/v5/market/candles", {"instId": symbol, "bar": bar, "limit": min(limit, 300)})
-    rows = list(reversed(data["data"]))  # okx returns newest first
+    rows = list(reversed(data["data"]))
     df = pd.DataFrame(rows, columns=["open_time", "open", "high", "low", "close",
                                       "volume", "volCcy", "volCcyQuote", "confirm"])
     for c in ["open", "high", "low", "close", "volume", "volCcyQuote"]:
@@ -143,90 +143,151 @@ def _okx_klines(symbol, interval, limit):
 def _okx_funding(symbol):
     fr = _get(f"{OKX_BASE}/api/v5/public/funding-rate", {"instId": symbol})
     tick = _get(f"{OKX_BASE}/api/v5/market/ticker", {"instId": symbol})
+    return {"mark_price": float(tick["data"][0]["last"]), "last_funding_rate": float(fr["data"][0]["fundingRate"])}
+
+
+def _okx_top_symbols(n):
+    data = _get(f"{OKX_BASE}/api/v5/market/tickers", {"instType": "SWAP"})["data"]
+    data = [d for d in data if d["instId"].endswith("-USDT-SWAP")]
+    data.sort(key=lambda d: float(d.get("volCcy24h", 0) or 0), reverse=True)
+    bases = [d["instId"].split("-")[0] for d in data]
+    bases = [b for b in bases if b not in _STOCK_TICKER_DENYLIST]
+    return bases[: n * 2]
+
+
+# ------------------------------------------------------------------ Bitget --
+def _bitget_klines(symbol, interval, limit):
+    gran = BITGET_INTERVAL_MAP.get(interval, "1D")
+    data = _get(f"{BITGET_BASE}/api/v2/mix/market/candles",
+                {"symbol": symbol, "productType": "usdt-futures", "granularity": gran, "limit": min(limit, 1000)})
+    rows = data.get("data", [])
+    rows = sorted(rows, key=lambda r: int(r[0]))
+    df = pd.DataFrame(rows, columns=["open_time", "open", "high", "low", "close", "base_vol", "quote_volume"])
+    for c in ["open", "high", "low", "close", "base_vol", "quote_volume"]:
+        df[c] = df[c].astype(float)
+    df["open_time"] = pd.to_datetime(df["open_time"].astype("int64"), unit="ms")
+    df["volume"] = df["base_vol"]
+    return df[["open_time", "open", "high", "low", "close", "volume", "quote_volume"]]
+
+
+def _bitget_funding(symbol):
+    data = _get(f"{BITGET_BASE}/api/v2/mix/market/ticker", {"symbol": symbol, "productType": "usdt-futures"})
+    raw = data.get("data")
+    item = raw[0] if isinstance(raw, list) else (raw or {})
     return {
-        "mark_price": float(tick["data"][0]["last"]),
-        "last_funding_rate": float(fr["data"][0]["fundingRate"]),
+        "mark_price": float(item.get("markPrice", item.get("lastPr", 0)) or 0),
+        "last_funding_rate": float(item.get("fundingRate", 0) or 0),
     }
 
 
-_SYMBOL_FETCHERS = {"binance": _binance_symbols, "bybit": _bybit_symbols, "okx": _okx_symbols}
-_KLINE_FETCHERS = {"binance": _binance_klines, "bybit": _bybit_klines, "okx": _okx_klines}
-_FUNDING_FETCHERS = {"binance": _binance_funding, "bybit": _bybit_funding, "okx": _okx_funding}
+def _bitget_top_symbols(n):
+    data = _get(f"{BITGET_BASE}/api/v2/mix/market/tickers", {"productType": "usdt-futures"})["data"]
+    data = [d for d in data if d.get("symbol", "").endswith("USDT")]
+    data.sort(key=lambda d: float(d.get("usdtVolume", d.get("quoteVolume", 0)) or 0), reverse=True)
+    return [d["symbol"][:-4] for d in data[: n * 2]]
 
 
-def _detect_source(force=False):
-    global _ACTIVE_SOURCE
-    if _ACTIVE_SOURCE and not force:
-        return _ACTIVE_SOURCE
+# ----------------------------------------------------------------- Gate.io --
+def _gateio_klines(symbol, interval, limit):
+    iv = GATEIO_INTERVAL_MAP.get(interval, "1d")
+    data = _get(f"{GATEIO_BASE}/api/v4/futures/usdt/candlesticks",
+                {"contract": symbol, "interval": iv, "limit": min(limit, 2000)})
+    rows = sorted(data, key=lambda r: r["t"])
+    df = pd.DataFrame(rows)
+    df = df.rename(columns={"t": "open_time", "o": "open", "h": "high", "l": "low", "c": "close",
+                             "v": "volume", "sum": "quote_volume"})
+    for c in ["open", "high", "low", "close", "volume", "quote_volume"]:
+        df[c] = df[c].astype(float)
+    df["open_time"] = pd.to_datetime(df["open_time"].astype("int64"), unit="s")
+    return df[["open_time", "open", "high", "low", "close", "volume", "quote_volume"]]
 
+
+def _gateio_funding(symbol):
+    data = _get(f"{GATEIO_BASE}/api/v4/futures/usdt/tickers", {"contract": symbol})
+    item = data[0] if isinstance(data, list) and data else {}
+    return {
+        "mark_price": float(item.get("mark_price", item.get("last", 0)) or 0),
+        "last_funding_rate": float(item.get("funding_rate", 0) or 0),
+    }
+
+
+def _gateio_top_symbols(n):
+    data = _get(f"{GATEIO_BASE}/api/v4/futures/usdt/tickers")
+    data = [d for d in data if d.get("contract", "").endswith("_USDT")]
+    data.sort(key=lambda d: float(d.get("volume_24h_quote", d.get("volume_24h", 0)) or 0), reverse=True)
+    return [d["contract"][:-5] for d in data[: n * 2]]
+
+
+_KLINE_FETCHERS = {
+    "binance": _binance_klines, "bybit": _bybit_klines, "okx": _okx_klines,
+    "bitget": _bitget_klines, "gateio": _gateio_klines,
+}
+_FUNDING_FETCHERS = {
+    "binance": _binance_funding, "bybit": _bybit_funding, "okx": _okx_funding,
+    "bitget": _bitget_funding, "gateio": _gateio_funding,
+}
+_TOP_SYMBOL_FETCHERS = {
+    "binance": _binance_top_symbols, "bybit": _bybit_top_symbols, "okx": _okx_top_symbols,
+    "bitget": _bitget_top_symbols, "gateio": _gateio_top_symbols,
+}
+
+
+def get_klines_from(exchange, base_symbol, interval="1d", limit=500):
+    """Returns None (does not raise) if this exchange doesn't list the
+    symbol or the request fails — callers treat a missing exchange as
+    'not available there' and just use whichever DO respond."""
+    try:
+        sym = symbol_for(exchange, base_symbol)
+        return _KLINE_FETCHERS[exchange](sym, interval, limit)
+    except Exception:
+        return None
+
+
+def get_funding_from(exchange, base_symbol):
+    try:
+        sym = symbol_for(exchange, base_symbol)
+        return _FUNDING_FETCHERS[exchange](sym)
+    except Exception:
+        return None
+
+
+def debug_fetch_klines(exchange, base_symbol, limit=10):
+    """Diagnostic helper — unlike get_klines_from, this RAISES so you can
+    see the exact error when testing a single exchange/symbol combo."""
+    sym = symbol_for(exchange, base_symbol)
+    return _KLINE_FETCHERS[exchange](sym, "1d", limit)
+
+
+def get_top_symbols_by_volume(n=30, exchanges=None):
+    """
+    Builds a volume-ranked universe of base-asset symbols (e.g. 'BTC',
+    'ETH', ...) using whichever exchange responds first. This list is
+    just used to decide WHICH coins to scan — the actual per-coin
+    analysis still queries all 5 exchanges for each one.
+    """
+    exchanges = exchanges or EXCHANGES
     _LAST_ERRORS.clear()
-    for name in ("binance", "bybit", "okx"):
+    for ex in exchanges:
         try:
-            _SYMBOL_FETCHERS[name]()
-            _ACTIVE_SOURCE = name
-            return name
+            bases = _TOP_SYMBOL_FETCHERS[ex](n)
+            seen, out = set(), []
+            for b in bases:
+                if b not in seen:
+                    seen.add(b)
+                    out.append(b)
+                if len(out) >= n:
+                    break
+            return out, ex
         except Exception as e:
-            _LAST_ERRORS[name] = f"{type(e).__name__}: {e}"
+            _LAST_ERRORS[ex] = f"{type(e).__name__}: {e}"
             continue
 
     detail = "\n".join(f"- {k}: {v}" for k, v in _LAST_ERRORS.items())
     raise DataSourceError(
-        "Hiçbir borsa API'sine erişilemedi (barındırma sunucusu engellenmiş olabilir).\n"
+        "Hiçbir borsa API'sinden coin listesi alınamadı.\n"
         f"Denenen kaynaklar ve hatalar:\n{detail}"
     )
 
 
-def get_active_source():
-    """Which exchange is currently being used ('binance' / 'bybit' / 'okx')."""
-    return _detect_source()
-
-
 def get_last_errors():
-    """Errors from sources that failed before the active source succeeded (diagnostic)."""
     return dict(_LAST_ERRORS)
-
-
-def get_usdt_perpetual_symbols():
-    source = _detect_source()
-    return _SYMBOL_FETCHERS[source]()
-
-
-def get_klines(symbol, interval="1d", limit=500):
-    source = _detect_source()
-    return _KLINE_FETCHERS[source](symbol, interval, limit)
-
-
-def get_mark_price_and_funding(symbol):
-    source = _detect_source()
-    return _FUNDING_FETCHERS[source](symbol)
-
-
-def get_funding_rate_history(symbol, limit=90):
-    """Only implemented for Binance; returns empty DataFrame on other sources."""
-    if _detect_source() != "binance":
-        return pd.DataFrame()
-    data = _get(f"{BINANCE_BASE}/fapi/v1/fundingRate", {"symbol": symbol, "limit": limit})
-    df = pd.DataFrame(data)
-    if df.empty:
-        return df
-    df["fundingRate"] = df["fundingRate"].astype(float)
-    df["fundingTime"] = pd.to_datetime(df["fundingTime"], unit="ms")
-    return df
-
-
-def get_open_interest_hist(symbol, period="1d", limit=30):
-    """Only implemented for Binance (~30 days retained); empty DataFrame otherwise."""
-    if _detect_source() != "binance":
-        return pd.DataFrame()
-    try:
-        data = _get(f"{BINANCE_BASE}/futures/data/openInterestHist",
-                     {"symbol": symbol, "period": period, "limit": limit})
-        df = pd.DataFrame(data)
-        if df.empty:
-            return df
-        df["sumOpenInterest"] = df["sumOpenInterest"].astype(float)
-        df["sumOpenInterestValue"] = df["sumOpenInterestValue"].astype(float)
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        return df
-    except Exception:
-        return pd.DataFrame()
