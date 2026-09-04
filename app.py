@@ -155,5 +155,4 @@ else:
     st.info("Taramayı başlatmak için soldaki butona basın.")
 
 st.markdown("---")
-st.caption("⚠️ Bu bir yatırım tavsiyesi değildir. Kümeler istatistiksel tahmindir; gerçek açık pozisyon (OI),
-pozisyon yönü, kaldıraç dağılımı ve gerçekleşmiş likidasyon verilerinin yerine geçmez. Kaldıraçlı işlemler yüksek risklidir.")
+st.caption("⚠️ Bu bir yatırım tavsiyesi değildir. Kümeler istatistiksel tahmindir; gerçek açık pozisyon (OI), pozisyon yönü, kaldıraç dağılımı ve gerçekleşmiş likidasyon verilerinin yerine geçmez. Kaldıraçlı işlemler yüksek risklidir.")
