@@ -1,6 +1,8 @@
 """
-Runs the full scan across USDT-M perpetual symbols and ranks them
-by "short-squeeze exhaustion" score.
+Runs the full scan across a volume-ranked universe of coins, pulling each
+coin's data from up to 5 exchanges (Binance, Bybit, OKX, Bitget, Gate.io)
+and aggregating the liquidation cluster estimate across whichever of
+those actually have that coin listed.
 """
 import time
 import pandas as pd
@@ -8,7 +10,7 @@ import pandas as pd
 import data_fetcher as api
 import liquidation_model as liq
 
-MODULE_VERSION = "screener-v5"
+MODULE_VERSION = "screener-v7-multiexchange"
 
 
 def compute_rsi(series, period=14):
@@ -19,38 +21,41 @@ def compute_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def analyze_symbol(symbol, kline_limit=500, cluster_window=90):
-    df = api.get_klines(symbol, interval="1d", limit=kline_limit)
-    if df.empty or len(df) < 30:
+def analyze_symbol_multi(base_symbol, kline_limit=500, cluster_window=90, min_sources=1):
+    dfs = {}
+    for ex in api.EXCHANGES:
+        df = api.get_klines_from(ex, base_symbol, interval="1d", limit=kline_limit)
+        if df is not None and len(df) >= 30:
+            dfs[ex] = df
+        time.sleep(0.05)
+
+    if len(dfs) < min_sources:
         return None
 
-    current_price = df["close"].iloc[-1]
+    # Exchange with the longest history becomes "primary" for price/RSI/chart display
+    primary_ex = max(dfs, key=lambda e: len(dfs[e]))
+    primary_df = dfs[primary_ex]
+    current_price = primary_df["close"].iloc[-1]
 
-    # Cluster estimation is windowed to the recent leg (default ~90 days),
-    # not the full history. A full year of history dilutes the signal —
-    # the squeeze pattern you're looking for plays out over weeks, so
-    # comparing it against a year of unrelated price action buries it.
-    window = min(cluster_window, len(df))
-    cluster_df = df.tail(window)
-
-    long_clusters, short_clusters = liq.estimate_liquidation_clusters(cluster_df)
+    cluster_dfs = [d.tail(min(cluster_window, len(d))) for d in dfs.values()]
+    long_clusters, short_clusters = liq.estimate_liquidation_clusters_multi(cluster_dfs)
     exhaustion = liq.squeeze_exhaustion_score(short_clusters, current_price)
 
-    try:
-        funding = api.get_mark_price_and_funding(symbol)
-        funding_rate = funding["last_funding_rate"]
-    except Exception:
-        funding_rate = None
+    funding_rate = None
+    fr = api.get_funding_from(primary_ex, base_symbol)
+    if fr:
+        funding_rate = fr["last_funding_rate"]
 
-    rsi = compute_rsi(df["close"]).iloc[-1]
-
-    lookback = min(90, len(df))
-    low_90 = df["close"].tail(lookback).min()
+    rsi = compute_rsi(primary_df["close"]).iloc[-1]
+    lookback = min(90, len(primary_df))
+    low_90 = primary_df["close"].tail(lookback).min()
     pct_from_low = 100 * (current_price - low_90) / low_90
 
     return {
-        "symbol": symbol,
+        "symbol": base_symbol,
         "price": current_price,
+        "kaynaklar": ", ".join(sorted(dfs.keys())),
+        "kaynak_sayisi": len(dfs),
         "rsi_14d": round(rsi, 1) if pd.notna(rsi) else None,
         "funding_rate_pct": round(funding_rate * 100, 4) if funding_rate is not None else None,
         "pct_from_90d_low": round(pct_from_low, 1),
@@ -60,20 +65,20 @@ def analyze_symbol(symbol, kline_limit=500, cluster_window=90):
         "exhaustion_score": exhaustion["score"],
         "long_clusters": long_clusters,
         "short_clusters": short_clusters,
-        "ohlcv": df,
+        "ohlcv": primary_df,
     }
 
 
-def run_scan(symbols, kline_limit=500, cluster_window=90, progress_callback=None):
+def run_scan_multi(base_symbols, kline_limit=500, cluster_window=90, min_sources=1, progress_callback=None):
     results = []
-    for i, sym in enumerate(symbols):
+    for i, sym in enumerate(base_symbols):
         try:
-            r = analyze_symbol(sym, kline_limit=kline_limit, cluster_window=cluster_window)
+            r = analyze_symbol_multi(sym, kline_limit=kline_limit, cluster_window=cluster_window,
+                                      min_sources=min_sources)
             if r:
                 results.append(r)
         except Exception:
             pass
         if progress_callback:
-            progress_callback(i + 1, len(symbols), sym)
-        time.sleep(0.15)  # a bit more breathing room to avoid shared-IP rate bans
+            progress_callback(i + 1, len(base_symbols), sym)
     return results
