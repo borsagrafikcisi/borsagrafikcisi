@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 import data_fetcher as api
 import screener
@@ -8,7 +10,7 @@ import screener
 st.set_page_config(page_title="Şort Sıkışması Tarayıcı", layout="wide")
 
 st.title("📉 Tahmini Şort Likidasyon Kümesi Tarayıcısı")
-st.caption("🔧 Kod sürümü: v7-multiexchange (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
+st.caption("🔧 Kod sürümü: v8-coinglass-style-chart (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
 st.caption(f"📦 Modül sürümleri — app: v7 | {api.MODULE_VERSION} | {screener.MODULE_VERSION}")
 
 st.markdown("""
@@ -114,27 +116,58 @@ if results:
 
         df = r["ohlcv"]
         short_clusters = r["short_clusters"]
+        long_clusters = r["long_clusters"]
 
-        fig = go.Figure()
+        # Only keep bins that are actually meaningful clusters (top ~35%
+        # by weight) so the chart shows distinct bars with gaps between
+        # them — like Coinglass — instead of a uniform painted ladder.
+        nonzero_short = short_clusters[short_clusters["weight"] > 0]["weight"]
+        nonzero_long = long_clusters[long_clusters["weight"] > 0]["weight"]
+        short_threshold = nonzero_short.quantile(0.65) if len(nonzero_short) else 0
+        long_threshold = nonzero_long.quantile(0.65) if len(nonzero_long) else 0
+
+        short_display = short_clusters[short_clusters["weight"] >= short_threshold].copy()
+        long_display = long_clusters[long_clusters["weight"] >= long_threshold].copy()
+        short_display["mid"] = (short_display["price_low"] + short_display["price_high"]) / 2
+        long_display["mid"] = (long_display["price_low"] + long_display["price_high"]) / 2
+        bin_height = (short_clusters["price_high"].iloc[0] - short_clusters["price_low"].iloc[0])
+
+        # zoom the y-axis to where the actual clusters + recent price live,
+        # so we're not stretched out to the full synthetic bin range
+        price_lo = min(df["low"].tail(120).min(), short_display["mid"].min() if len(short_display) else df["low"].min())
+        price_hi = max(df["high"].tail(120).max(), short_display["mid"].max() if len(short_display) else df["high"].max())
+        pad = (price_hi - price_lo) * 0.08
+        y_range = [price_lo - pad, price_hi + pad]
+
+        fig = make_subplots(
+            rows=1, cols=2, shared_yaxes=True,
+            column_widths=[0.22, 0.78], horizontal_spacing=0.01,
+        )
+
+        fig.add_trace(go.Bar(
+            y=short_display["mid"], x=short_display["weight"], orientation="h",
+            marker_color="orange", name="Şort kümeleri", width=bin_height * 0.9,
+        ), row=1, col=1)
+        fig.add_trace(go.Bar(
+            y=long_display["mid"], x=-long_display["weight"], orientation="h",
+            marker_color="mediumseagreen", name="Long kümeleri", width=bin_height * 0.9,
+        ), row=1, col=1)
+
         fig.add_trace(go.Candlestick(
             x=df["open_time"], open=df["open"], high=df["high"],
             low=df["low"], close=df["close"], name=chosen
-        ))
-        max_w = short_clusters["weight"].max() or 1
-        for _, row in short_clusters.iterrows():
-            if row["weight"] <= 0:
-                continue
-            opacity = min(0.9, 0.15 + 0.75 * (row["weight"] / max_w))
-            fig.add_hrect(
-                y0=row["price_low"], y1=row["price_high"],
-                fillcolor="orange", opacity=opacity, line_width=0
-            )
+        ), row=1, col=2)
         fig.add_hline(y=r["price"], line_dash="dash", line_color="white",
-                       annotation_text=f"Güncel Fiyat: {r['price']}")
+                       annotation_text=f"Güncel Fiyat: {r['price']}", row=1, col=2)
 
+        fig.update_xaxes(autorange="reversed", showticklabels=False, row=1, col=1)
+        fig.update_yaxes(range=y_range, row=1, col=1)
+        fig.update_yaxes(range=y_range, row=1, col=2)
+        fig.update_xaxes(rangeslider_visible=False, row=1, col=2)
         fig.update_layout(
-            title=f"{chosen} — Tahmini Şort Likidasyon Kümeleri ({r['kaynaklar']} birleşimi)",
-            height=650, xaxis_rangeslider_visible=False
+            title=f"{chosen} — Tahmini Likidasyon Kümeleri ({r['kaynaklar']} birleşimi)",
+            height=650, barmode="overlay", showlegend=True,
+            bargap=0.15,
         )
         st.plotly_chart(fig, use_container_width=True)
 
