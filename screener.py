@@ -10,7 +10,7 @@ import pandas as pd
 import data_fetcher as api
 import liquidation_model as liq
 
-MODULE_VERSION = "screener-v7-multiexchange"
+MODULE_VERSION = "screener-v8-symbol-prefix-resolution"
 
 
 def compute_rsi(series, period=14):
@@ -70,6 +70,7 @@ def analyze_symbol_multi(base_symbol, kline_limit=500, cluster_window=90, min_so
 
 
 def run_scan_multi(base_symbols, kline_limit=500, cluster_window=90, min_sources=1, progress_callback=None):
+    api.clear_symbol_cache()  # refresh each scan in case listings changed
     results = []
     for i, sym in enumerate(base_symbols):
         try:
