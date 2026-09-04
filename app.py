@@ -10,7 +10,7 @@ import screener
 st.set_page_config(page_title="Şort Sıkışması Tarayıcı", layout="wide")
 
 st.title("📉 Tahmini Şort Likidasyon Kümesi Tarayıcısı")
-st.caption("🔧 Kod sürümü: v8-coinglass-style-chart (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
+st.caption("🔧 Kod sürümü: v9-symbol-prefix-resolution (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
 st.caption(f"📦 Modül sürümleri — app: v7 | {api.MODULE_VERSION} | {screener.MODULE_VERSION}")
 
 st.markdown("""
