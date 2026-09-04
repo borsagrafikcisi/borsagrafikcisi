@@ -75,5 +75,5 @@ def run_scan(symbols, kline_limit=500, cluster_window=90, progress_callback=None
             pass
         if progress_callback:
             progress_callback(i + 1, len(symbols), sym)
-        time.sleep(0.05)  # stay comfortably under Binance rate limits
+        time.sleep(0.15)  # a bit more breathing room to avoid shared-IP rate bans
     return results
