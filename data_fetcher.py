@@ -15,6 +15,7 @@ error and we can patch field names quickly.
 """
 import requests
 import pandas as pd
+import re
 
 BINANCE_BASE = "https://fapi.binance.com"
 BYBIT_BASE = "https://api.bybit.com"
@@ -23,7 +24,7 @@ BITGET_BASE = "https://api.bitget.com"
 GATEIO_BASE = "https://api.gateio.ws"
 
 EXCHANGES = ["binance", "bybit", "okx", "bitget", "gateio"]
-MODULE_VERSION = "data_fetcher-v7-multiexchange"
+MODULE_VERSION = "data_fetcher-v8-symbol-prefix-resolution"
 
 BYBIT_INTERVAL_MAP = {"1d": "D", "4h": "240", "1h": "60"}
 OKX_INTERVAL_MAP = {"1d": "1D", "4h": "4H", "1h": "1H"}
@@ -31,6 +32,7 @@ BITGET_INTERVAL_MAP = {"1d": "1D", "4h": "4H", "1h": "1H"}
 GATEIO_INTERVAL_MAP = {"1d": "1d", "4h": "4h", "1h": "1h"}
 
 _LAST_ERRORS = {}
+_SYMBOL_CACHE = {}  # exchange -> set of that exchange's raw perpetual symbol strings
 
 
 class DataSourceError(Exception):
@@ -44,8 +46,9 @@ def _get(url, params=None, timeout=10):
     return r.json()
 
 
-def symbol_for(exchange, base):
-    base = base.upper()
+def _format_symbol(exchange, base):
+    """Builds the raw exchange symbol string for a given base ticker,
+    WITHOUT trying to guess prefixes — see resolve_symbol() for that."""
     if exchange in ("binance", "bybit", "bitget"):
         return f"{base}USDT"
     if exchange == "okx":
@@ -53,6 +56,73 @@ def symbol_for(exchange, base):
     if exchange == "gateio":
         return f"{base}_USDT"
     raise ValueError(f"Unknown exchange: {exchange}")
+
+
+def _get_all_symbols(exchange):
+    """Full raw perpetual symbol list for one exchange, cached per scan.
+    Needed because low-price coins get different '1000x' style prefixes
+    on different exchanges (e.g. Binance's 1000PEPEUSDT vs OKX's
+    PEPE-USDT-SWAP) — we can't just guess the format blindly."""
+    if exchange in _SYMBOL_CACHE:
+        return _SYMBOL_CACHE[exchange]
+
+    syms = set()
+    try:
+        if exchange == "binance":
+            data = _get(f"{BINANCE_BASE}/fapi/v1/exchangeInfo")
+            syms = {s["symbol"] for s in data["symbols"]
+                    if s["quoteAsset"] == "USDT" and s["contractType"] == "PERPETUAL" and s["status"] == "TRADING"}
+        elif exchange == "bybit":
+            data = _get(f"{BYBIT_BASE}/v5/market/instruments-info", {"category": "linear"})["result"]["list"]
+            syms = {i["symbol"] for i in data if i["symbol"].endswith("USDT") and i.get("status") == "Trading"}
+        elif exchange == "okx":
+            data = _get(f"{OKX_BASE}/api/v5/public/instruments", {"instType": "SWAP"})["data"]
+            syms = {i["instId"] for i in data if i["instId"].endswith("-USDT-SWAP") and i.get("state") == "live"}
+        elif exchange == "bitget":
+            data = _get(f"{BITGET_BASE}/api/v2/mix/market/contracts", {"productType": "usdt-futures"})["data"]
+            syms = {i["symbol"] for i in data if i.get("symbol", "").endswith("USDT")}
+        elif exchange == "gateio":
+            data = _get(f"{GATEIO_BASE}/api/v4/futures/usdt/contracts")
+            syms = {i["name"] for i in data if i.get("name", "").endswith("_USDT")}
+    except Exception:
+        syms = set()
+
+    _SYMBOL_CACHE[exchange] = syms
+    return syms
+
+
+def clear_symbol_cache():
+    _SYMBOL_CACHE.clear()
+
+
+_PREFIX_VARIANTS = ["", "1000", "10000", "100000", "1000000", "100"]
+_PREFIX_RE = re.compile(r"^(10{2,6})([A-Z].*)$")  # matches 100/1000/10000/... + letters
+
+
+def resolve_symbol(exchange, base):
+    """Finds the ACTUAL symbol string this exchange uses for a coin,
+    trying common '1000x' style prefix variants against that exchange's
+    real symbol list. Returns None if not listed there at all."""
+    base = base.upper()
+    m = _PREFIX_RE.match(base)
+    core = m.group(2) if m else base
+
+    all_syms = _get_all_symbols(exchange)
+    if not all_syms:
+        # symbol list unavailable (e.g. exchange down) — fall back to a
+        # blind guess so we at least try the plain, unprefixed form
+        return _format_symbol(exchange, core)
+
+    for prefix in _PREFIX_VARIANTS:
+        candidate = _format_symbol(exchange, f"{prefix}{core}")
+        if candidate in all_syms:
+            return candidate
+    return None
+
+
+def symbol_for(exchange, base):
+    """Kept for compatibility — blind format without prefix resolution."""
+    return _format_symbol(exchange, base)
 
 
 # OKX also lists tokenized US-stock perpetuals under the same naming —
@@ -237,7 +307,9 @@ def get_klines_from(exchange, base_symbol, interval="1d", limit=500):
     symbol or the request fails — callers treat a missing exchange as
     'not available there' and just use whichever DO respond."""
     try:
-        sym = symbol_for(exchange, base_symbol)
+        sym = resolve_symbol(exchange, base_symbol)
+        if sym is None:
+            return None
         return _KLINE_FETCHERS[exchange](sym, interval, limit)
     except Exception:
         return None
@@ -245,7 +317,9 @@ def get_klines_from(exchange, base_symbol, interval="1d", limit=500):
 
 def get_funding_from(exchange, base_symbol):
     try:
-        sym = symbol_for(exchange, base_symbol)
+        sym = resolve_symbol(exchange, base_symbol)
+        if sym is None:
+            return None
         return _FUNDING_FETCHERS[exchange](sym)
     except Exception:
         return None
@@ -254,7 +328,12 @@ def get_funding_from(exchange, base_symbol):
 def debug_fetch_klines(exchange, base_symbol, limit=10):
     """Diagnostic helper — unlike get_klines_from, this RAISES so you can
     see the exact error when testing a single exchange/symbol combo."""
-    sym = symbol_for(exchange, base_symbol)
+    sym = resolve_symbol(exchange, base_symbol)
+    if sym is None:
+        raise DataSourceError(
+            f"'{base_symbol}' bu borsanın sembol listesinde bulunamadı "
+            f"(denenen önekler: {_PREFIX_VARIANTS})"
+        )
     return _KLINE_FETCHERS[exchange](sym, "1d", limit)
 
 
