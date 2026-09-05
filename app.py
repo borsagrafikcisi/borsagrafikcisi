@@ -32,14 +32,16 @@ with st.sidebar:
         "Taranacak maksimum coin sayısı", 10, 100, 25, step=5,
         help="Her coin 5 borsadan sorgulandığı için yüksek değerler taramayı belirgin şekilde yavaşlatır."
     )
-    kline_limit = st.select_slider("Geçmiş veri uzunluğu (gün)", options=[200, 365, 500, 1000], value=500)
+    kline_limit = st.select_slider("Geçmiş veri uzunluğu (gün)", options=[200, 365, 500, 1000], value=365)
     cluster_window = st.slider(
         "Küme analizi penceresi (gün)", 30, 200, 90, step=10,
         help="Şort likidasyon kümeleri bu son N günlük hareketten hesaplanır."
     )
     min_sources = st.slider(
         "Minimum kaç borsadan veri gelsin", 1, 5, 2,
-        help="Bir coin en az bu kadar borsada işlem görmüyorsa sonuçlara dahil edilmez."
+        help="Önerilen: 2-3. 5 seçerseniz coin'in TAM 5 borsanın hepsinde "
+             "aynı anda bulunmasını şart koşarsınız — bu çoğu zaman hiçbir "
+             "coin için gerçekleşmez ve sonuç listesi boş kalır."
     )
     min_score = st.slider("Minimum tükenme skoru", 0, 100, 30)
     run_button = st.button("🔍 Taramayı Başlat", type="primary")
