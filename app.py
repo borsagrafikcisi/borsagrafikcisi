@@ -10,8 +10,8 @@ import screener
 st.set_page_config(page_title="Şort Sıkışması Tarayıcı", layout="wide")
 
 st.title("📉 Tahmini Şort Likidasyon Kümesi Tarayıcısı")
-st.caption("🔧 Kod sürümü: v9-symbol-prefix-resolution (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
-st.caption(f"📦 Modül sürümleri — app: v7 | {api.MODULE_VERSION} | {screener.MODULE_VERSION}")
+st.caption("🔧 Kod sürümü: v11-batched-scanning (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
+st.caption(f"📦 Modül sürümleri — app: v11 | {api.MODULE_VERSION} | {screener.MODULE_VERSION}")
 
 st.markdown("""
 Bu araç, Coinglass'ın **ücretli** likidasyon haritası verisi yerine, **5 borsanın
@@ -29,8 +29,11 @@ verisi olan borsalar toplanıp tek bir kümede birleştirilir.
 with st.sidebar:
     st.header("Ayarlar")
     max_symbols = st.slider(
-        "Taranacak maksimum coin sayısı", 10, 100, 25, step=5,
-        help="Her coin 5 borsadan sorgulandığı için yüksek değerler taramayı belirgin şekilde yavaşlatır."
+        "Taranacak maksimum coin sayısı", 10, 400, 25, step=25,
+        help="Her coin 5 borsadan sorgulandığı için yüksek değerler taramayı belirgin şekilde "
+             "yavaşlatır ve borsaların geçici hız-limiti (rate limit) banına takılma riskini artırır. "
+             "400 coin'de tarama birkaç dakika sürebilir; bir borsa banlanırsa sistem otomatik "
+             "olarak diğerine düşer, sonuçlar yine gelir."
     )
     kline_limit = st.select_slider("Geçmiş veri uzunluğu (gün)", options=[200, 365, 500, 1000], value=365)
     cluster_window = st.slider(
@@ -44,6 +47,19 @@ with st.sidebar:
              "coin için gerçekleşmez ve sonuç listesi boş kalır."
     )
     min_score = st.slider("Minimum tükenme skoru", 0, 100, 30)
+
+    with st.expander("⚙️ Gelişmiş: gruplama ayarları"):
+        batch_size = st.slider(
+            "Grup büyüklüğü (kaç coin)", 5, 100, 25, step=5,
+            help="Coinler bu büyüklükte gruplara bölünüp sırayla taranır — Coinglass'ın "
+                 "sayfalama mantığına benzer. Küçük grup = daha güvenli ama daha fazla ara bekleme."
+        )
+        batch_pause = st.slider(
+            "Gruplar arası bekleme (saniye)", 0.0, 10.0, 3.0, step=0.5,
+            help="Her grup bitince borsalara nefes payı vermek için beklenir. "
+                 "Rate-limit banına takılıyorsanız bu süreyi artırın."
+        )
+
     run_button = st.button("🔍 Taramayı Başlat", type="primary")
 
     with st.expander("🔧 Tek borsa/coin testi (teşhis)"):
@@ -71,19 +87,24 @@ if run_button:
         st.stop()
 
     st.info(f"Coin evreni **{universe_source.upper()}** hacim sıralamasından alındı "
-            f"({len(base_symbols)} coin). Her coin ayrıca 5 borsadan da sorgulanacak.")
+            f"({len(base_symbols)} coin). Her coin ayrıca 5 borsadan da sorgulanacak, "
+            f"{batch_size}'lik gruplar halinde taranacak.")
 
     progress_bar = st.progress(0, text="Taranıyor...")
+    batch_status = st.empty()
 
-    def _progress(i, total, sym):
+    def _progress(i, total, sym, batch_idx, total_batches):
+        batch_status.caption(f"Grup {batch_idx}/{total_batches}")
         progress_bar.progress(i / total, text=f"Taranıyor: {sym} ({i}/{total})")
 
     results = screener.run_scan_multi(
         base_symbols, kline_limit=kline_limit, cluster_window=cluster_window,
-        min_sources=min_sources, progress_callback=_progress
+        min_sources=min_sources, batch_size=batch_size, batch_pause=batch_pause,
+        progress_callback=_progress
     )
     st.session_state.scan_results = results
     progress_bar.empty()
+    batch_status.empty()
     st.success(f"Tarama tamamlandı. {len(results)} coin analiz edildi.")
 
 results = st.session_state.scan_results
