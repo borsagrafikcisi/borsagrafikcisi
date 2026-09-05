@@ -10,7 +10,7 @@ import pandas as pd
 import data_fetcher as api
 import liquidation_model as liq
 
-MODULE_VERSION = "screener-v8-symbol-prefix-resolution"
+MODULE_VERSION = "screener-v9-400symbols"
 
 
 def compute_rsi(series, period=14):
@@ -27,7 +27,7 @@ def analyze_symbol_multi(base_symbol, kline_limit=500, cluster_window=90, min_so
         df = api.get_klines_from(ex, base_symbol, interval="1d", limit=kline_limit)
         if df is not None and len(df) >= 30:
             dfs[ex] = df
-        time.sleep(0.05)
+        time.sleep(0.08)
 
     if len(dfs) < min_sources:
         return None
@@ -69,17 +69,34 @@ def analyze_symbol_multi(base_symbol, kline_limit=500, cluster_window=90, min_so
     }
 
 
-def run_scan_multi(base_symbols, kline_limit=500, cluster_window=90, min_sources=1, progress_callback=None):
+def run_scan_multi(base_symbols, kline_limit=500, cluster_window=90, min_sources=1,
+                    batch_size=50, batch_pause=3.0, progress_callback=None):
+    """
+    Scans in batches (like Coinglass's paginated coin lists) with a short
+    pause between batches — this spreads out the request load over time,
+    which meaningfully reduces the odds of hitting an exchange's shared-IP
+    rate-limit ban when scanning large coin counts.
+    """
     api.clear_symbol_cache()  # refresh each scan in case listings changed
     results = []
-    for i, sym in enumerate(base_symbols):
-        try:
-            r = analyze_symbol_multi(sym, kline_limit=kline_limit, cluster_window=cluster_window,
-                                      min_sources=min_sources)
-            if r:
-                results.append(r)
-        except Exception:
-            pass
-        if progress_callback:
-            progress_callback(i + 1, len(base_symbols), sym)
+    total = len(base_symbols)
+    batches = [base_symbols[i:i + batch_size] for i in range(0, total, batch_size)]
+
+    done = 0
+    for batch_idx, batch in enumerate(batches, start=1):
+        for sym in batch:
+            try:
+                r = analyze_symbol_multi(sym, kline_limit=kline_limit, cluster_window=cluster_window,
+                                          min_sources=min_sources)
+                if r:
+                    results.append(r)
+            except Exception:
+                pass
+            done += 1
+            if progress_callback:
+                progress_callback(done, total, sym, batch_idx, len(batches))
+
+        if batch_idx < len(batches):
+            time.sleep(batch_pause)
+
     return results
