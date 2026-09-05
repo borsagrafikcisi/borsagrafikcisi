@@ -10,7 +10,7 @@ import pandas as pd
 import data_fetcher as api
 import liquidation_model as liq
 
-MODULE_VERSION = "screener-v9-400symbols"
+MODULE_VERSION = "screener-v10-selectable-exchanges"
 
 
 def compute_rsi(series, period=14):
@@ -21,9 +21,10 @@ def compute_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def analyze_symbol_multi(base_symbol, kline_limit=500, cluster_window=90, min_sources=1):
+def analyze_symbol_multi(base_symbol, kline_limit=500, cluster_window=90, min_sources=1, exchanges=None):
+    exchanges = exchanges or api.EXCHANGES
     dfs = {}
-    for ex in api.EXCHANGES:
+    for ex in exchanges:
         df = api.get_klines_from(ex, base_symbol, interval="1d", limit=kline_limit)
         if df is not None and len(df) >= 30:
             dfs[ex] = df
@@ -70,13 +71,14 @@ def analyze_symbol_multi(base_symbol, kline_limit=500, cluster_window=90, min_so
 
 
 def run_scan_multi(base_symbols, kline_limit=500, cluster_window=90, min_sources=1,
-                    batch_size=50, batch_pause=3.0, progress_callback=None):
+                    batch_size=50, batch_pause=3.0, exchanges=None, progress_callback=None):
     """
     Scans in batches (like Coinglass's paginated coin lists) with a short
     pause between batches — this spreads out the request load over time,
     which meaningfully reduces the odds of hitting an exchange's shared-IP
     rate-limit ban when scanning large coin counts.
     """
+    exchanges = exchanges or api.EXCHANGES
     api.clear_symbol_cache()  # refresh each scan in case listings changed
     results = []
     total = len(base_symbols)
@@ -87,7 +89,7 @@ def run_scan_multi(base_symbols, kline_limit=500, cluster_window=90, min_sources
         for sym in batch:
             try:
                 r = analyze_symbol_multi(sym, kline_limit=kline_limit, cluster_window=cluster_window,
-                                          min_sources=min_sources)
+                                          min_sources=min_sources, exchanges=exchanges)
                 if r:
                     results.append(r)
             except Exception:
