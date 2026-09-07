@@ -10,7 +10,7 @@ import pandas as pd
 import data_fetcher as api
 import liquidation_model as liq
 
-MODULE_VERSION = "screener-v11-simple-mode-autofallback"
+MODULE_VERSION = "screener-v12-error-diagnostics"
 
 
 def compute_rsi(series, period=14):
@@ -166,10 +166,16 @@ def run_scan_multi(base_symbols, kline_limit=500, cluster_window=90, min_sources
     pause between batches — this spreads out the request load over time,
     which meaningfully reduces the odds of hitting an exchange's shared-IP
     rate-limit ban when scanning large coin counts.
+
+    Returns (results, sample_errors) — sample_errors holds up to 3 REAL
+    diagnostic error strings from early failures (using debug_fetch_klines,
+    which raises instead of silently swallowing) so failures aren't a
+    silent "0 coins" with no explanation.
     """
     exchanges = exchanges or api.EXCHANGES
     api.clear_symbol_cache()  # refresh each scan in case listings changed
     results = []
+    sample_errors = []
     total = len(base_symbols)
     batches = [base_symbols[i:i + batch_size] for i in range(0, total, batch_size)]
 
@@ -181,13 +187,20 @@ def run_scan_multi(base_symbols, kline_limit=500, cluster_window=90, min_sources
                                           min_sources=min_sources, exchanges=exchanges)
                 if r:
                     results.append(r)
-            except Exception:
-                pass
+                elif len(sample_errors) < 3:
+                    for ex in exchanges:
+                        try:
+                            api.debug_fetch_klines(ex, sym, limit=5)
+                            sample_errors.append(f"{sym} ({ex}): veri geldi ama analiz sırasında elendi")
+                        except Exception as e:
+                            sample_errors.append(f"{sym} ({ex}): {type(e).__name__}: {e}")
+            except Exception as e:
+                if len(sample_errors) < 3:
+                    sample_errors.append(f"{sym}: {type(e).__name__}: {e}")
             done += 1
             if progress_callback:
                 progress_callback(done, total, sym, batch_idx, len(batches))
-
         if batch_idx < len(batches):
             time.sleep(batch_pause)
 
-    return results
+    return results, sample_errors
