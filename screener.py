@@ -10,7 +10,7 @@ import pandas as pd
 import data_fetcher as api
 import liquidation_model as liq
 
-MODULE_VERSION = "screener-v10-selectable-exchanges"
+MODULE_VERSION = "screener-v11-simple-mode-autofallback"
 
 
 def compute_rsi(series, period=14):
@@ -68,6 +68,95 @@ def analyze_symbol_multi(base_symbol, kline_limit=500, cluster_window=90, min_so
         "short_clusters": short_clusters,
         "ohlcv": primary_df,
     }
+
+
+def _try_analyze_single(base_symbol, exchange, kline_limit, cluster_window):
+    """Like analyze_symbol_multi but restricted to ONE exchange and never raises."""
+    try:
+        return analyze_symbol_multi(base_symbol, kline_limit=kline_limit, cluster_window=cluster_window,
+                                     min_sources=1, exchanges=[exchange])
+    except Exception:
+        return None
+
+
+def run_scan_simple_auto(exchange_priority, kline_limit=365, cluster_window=90,
+                          batch_size=25, batch_pause=3.0,
+                          progress_callback=None, status_callback=None):
+    """
+    Single-exchange 'scan everything' mode with automatic fallback.
+
+    Tries exchange_priority[0] first (e.g. Binance). Before committing to
+    scanning its ENTIRE coin list, it probes the first ~10 coins — if most
+    of them fail (a strong sign the exchange/IP is currently rate-limited
+    or banned, like the Binance 418 we saw), it gives up on that exchange
+    and moves to the next one in the priority list instead of wasting
+    minutes failing on hundreds of coins one by one.
+
+    Returns (results, exchange_used, errors_by_exchange).
+    """
+    api.clear_symbol_cache()
+    last_errors = {}
+
+    for ex in exchange_priority:
+        if status_callback:
+            status_callback(f"{ex.upper()} coin listesi alınıyor...")
+        try:
+            bases = api.get_all_base_symbols(ex)
+        except Exception as e:
+            last_errors[ex] = f"{type(e).__name__}: {e}"
+            continue
+
+        if not bases:
+            last_errors[ex] = "Boş coin listesi döndü"
+            continue
+
+        probe_size = min(10, len(bases))
+        probe_symbols = bases[:probe_size]
+        if status_callback:
+            status_callback(f"{ex.upper()} test ediliyor (ilk {probe_size} coin)...")
+
+        probe_results = []
+        probe_failures = 0
+        for sym in probe_symbols:
+            r = _try_analyze_single(sym, ex, kline_limit, cluster_window)
+            if r is None:
+                probe_failures += 1
+            else:
+                probe_results.append(r)
+            time.sleep(0.08)
+
+        if probe_failures >= max(1, int(probe_size * 0.7)):
+            last_errors[ex] = (f"İlk {probe_size} coin'in {probe_failures} tanesi başarısız oldu "
+                                f"(muhtemelen hız limiti/ban) — bu borsa atlanıyor")
+            continue
+
+        # Probe looks healthy enough — scan the rest of this exchange's coins.
+        if status_callback:
+            status_callback(f"{ex.upper()} sağlıklı görünüyor, {len(bases)} coin taranıyor...")
+
+        results = list(probe_results)
+        remaining = bases[probe_size:]
+        total = len(bases)
+        done = probe_size
+        if progress_callback:
+            progress_callback(done, total, probe_symbols[-1] if probe_symbols else "", 1, 1)
+
+        batches = [remaining[i:i + batch_size] for i in range(0, len(remaining), batch_size)]
+        for batch_idx, batch in enumerate(batches, start=1):
+            for sym in batch:
+                r = _try_analyze_single(sym, ex, kline_limit, cluster_window)
+                if r:
+                    results.append(r)
+                done += 1
+                if progress_callback:
+                    progress_callback(done, total, sym, batch_idx, len(batches))
+            if batch_idx < len(batches):
+                time.sleep(batch_pause)
+
+        return results, ex, last_errors
+
+    detail = "\n".join(f"- {k}: {v}" for k, v in last_errors.items())
+    raise api.DataSourceError(f"Denenen borsaların hepsi başarısız oldu:\n{detail}")
 
 
 def run_scan_multi(base_symbols, kline_limit=500, cluster_window=90, min_sources=1,
