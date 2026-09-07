@@ -30,7 +30,7 @@ COINEX_BASE = "https://api.coinex.com"
 BINGX_BASE = "https://open-api.bingx.com"
 
 EXCHANGES = ["binance", "bybit", "okx", "bitget", "gateio", "kucoin", "mexc", "htx", "coinex", "bingx"]
-MODULE_VERSION = "data_fetcher-v10-10exchanges"
+MODULE_VERSION = "data_fetcher-v11-fixed-missing-def"
 
 BYBIT_INTERVAL_MAP = {"1d": "D", "4h": "240", "1h": "60"}
 OKX_INTERVAL_MAP = {"1d": "1D", "4h": "4H", "1h": "1H"}
@@ -559,6 +559,9 @@ def get_all_base_symbols(exchange):
         if b:
             bases.add(b)
     return sorted(bases)
+
+
+def get_klines_from(exchange, base_symbol, interval="1d", limit=500):
     """Returns None (does not raise) if this exchange doesn't list the
     symbol or the request fails — callers treat a missing exchange as
     'not available there' and just use whichever DO respond."""
