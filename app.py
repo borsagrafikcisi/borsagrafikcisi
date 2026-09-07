@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -9,280 +8,114 @@ import screener
 
 st.set_page_config(page_title="Şort Sıkışması Tarayıcı", layout="wide")
 
-st.title("📉 Tahmini Şort Likidasyon Kümesi Tarayıcısı")
-st.caption("🔧 Kod sürümü: v15-auto-exchange-fallback (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
-st.caption(f"📦 Modül sürümleri — app: v13 | {api.MODULE_VERSION} | {screener.MODULE_VERSION}")
+# Fixed internal parameters — not exposed in the UI, kept simple on purpose.
+KLINE_LIMIT = 365       # one year of daily candles
+CLUSTER_WINDOW = 90     # liquidation clusters computed from the last ~90 days
+BATCH_SIZE = 25
+BATCH_PAUSE = 3.0
+
+EXCHANGE_OPTIONS = ["binance", "bybit", "okx"]
+
+st.title("📉 Şort Likidasyon Tarayıcısı")
+st.caption("🔧 Kod sürümü: v16-simplified")
 
 st.markdown("""
-Bu araç, Coinglass'ın **ücretli** likidasyon haritası verisi yerine, **seçtiğiniz borsaların
-ücretsiz herkese açık verilerini** (fiyat + hacim) birleştirerek şort likidasyon kümelerini
-**tahmin eder**. 10 borsa arasından (Binance, Bybit, OKX, Bitget, Gate.io, KuCoin, MEXC, HTX,
-CoinEx, BingX) istediğinizi soldan seçip birleştirebilirsiniz. Coinglass ile birebir aynı
-sonucu vermez — amaç, "şort sıkışması tükeniyor mu?" sorusuna dair bir ön filtre / fikir
-üretme aracı sağlamaktır.
+Seçtiğiniz borsadaki **tüm futures coinlerini tek seferde** tarar ve yıllık likidasyon
+hareketinde şort kümelerinin **sonuna yaklaşan** coinleri listeler — CAP örneğinde
+anlattığınız senaryo gibi: fiyat art arda şort kümelerini temizlemiş, geride sadece
+ince bir küme kalmış.
 
-**Mantık:** Fiyat yükselirken art arda şort likidasyonlarını temizliyorsa ve
-geride, mevcut fiyatın hemen üstünde küçük/ince bir küme kalmışsa, "tükenme
-skoru" yükselir — CAP örneğinde anlattığınız senaryo budur. Seçtiğiniz borsalardan
-o coin için veri olanlar toplanıp tek bir kümede birleştirilir.
+⚠️ Bu, Coinglass'ın gerçek verisi değil — o borsanın herkese açık fiyat+hacim
+verisinden üretilen istatistiksel bir **tahmindir**. Bir ön filtre olarak kullanın,
+son kararı Coinglass'ta kendiniz doğrulayın.
 """)
 
 with st.sidebar:
     st.header("Ayarlar")
-
-    simple_mode = st.checkbox(
-        "🎯 Basit Mod: tek borsa, sadece isim listesi", value=False,
-        help="Çoklu borsa birleştirme ve detaylı grafik olmadan, TEK bir borsanın "
-             "TÜM coinlerini tarar ve sadece coin adı + skor listesi verir. Coinglass'ta "
-             "kendiniz kontrol edeceğiniz için buradan sadece 'hangi coin'e bakmalıyım' "
-             "listesini almak isterseniz bu modu kullanın — çok daha hızlı ve düşük risklidir."
-    )
-
-    if simple_mode:
-        st.caption("Birincil borsa önce denenir; ilk birkaç coin'de sorun görülürse "
-                   "(rate-limit/ban belirtisi) otomatik olarak yedek borsaya geçilir.")
-        col1, col2 = st.columns(2)
-        with col1:
-            default_primary = api.EXCHANGES.index("binance") if "binance" in api.EXCHANGES else 0
-            primary_exchange = st.selectbox("Birincil borsa", api.EXCHANGES, index=default_primary)
-        with col2:
-            fallback_options = [e for e in api.EXCHANGES if e != primary_exchange]
-            default_fallback = fallback_options.index("bybit") if "bybit" in fallback_options else 0
-            fallback_exchange = st.selectbox("Yedek borsa", fallback_options, index=default_fallback)
-        exchange_priority = [primary_exchange, fallback_exchange]
-        selected_exchanges = exchange_priority
-        min_sources = 1
-        page_size = page_number = None
-        manual_symbols = None
-        selection_mode = "Tüm coinler (basit mod)"
-    else:
-        st.subheader("Borsa Seçimi")
-        selected_exchanges = st.multiselect(
-            "Hangi borsaların verisi birleştirilsin?",
-            options=api.EXCHANGES,
-            default=api.EXCHANGES[:5],
-            help="Örn. sadece 'binance' ve 'kucoin' seçerseniz, kümeler sadece bu ikisinden "
-                 "birleştirilir. KuCoin/MEXC/HTX/CoinEx/BingX henüz canlı test edilmedi — "
-                 "önce aşağıdaki test panelinden deneyin."
-        )
-        if not selected_exchanges:
-            st.warning("En az bir borsa seçmelisiniz.")
-
-        st.subheader("Coin Seçimi")
-        selection_mode = st.radio(
-            "Coin seçim modu", ["Hacim sıralaması (sayfalı)", "Manuel liste"],
-            help="Sayfalı mod: Coinglass'ın sayfaları gibi, hacim sırasına göre "
-                 "belirli bir aralığı tararsınız (ör. 51-100. coinler). Manuel: "
-                 "istediğiniz coinleri kendiniz yazarsınız."
-        )
-        if selection_mode == "Hacim sıralaması (sayfalı)":
-            page_size = st.slider("Sayfa başına coin sayısı", 10, 100, 50, step=10)
-            page_number = st.number_input(
-                "Sayfa numarası (1 = en yüksek hacimliler)", min_value=1, value=1, step=1
-            )
-            st.caption(f"Bu tarama, hacme göre {(page_number-1)*page_size + 1}. ile "
-                       f"{page_number*page_size}. sıradaki coinleri kapsayacak.")
-            manual_symbols = None
-        else:
-            manual_text = st.text_area(
-                "Coin listesi (virgülle ayırın)", value="BTC, ETH, SOL, XRP, DOGE",
-                help="Örnek: BTC, ETH, SOL, XRP, DOGE"
-            )
-            manual_symbols = [s.strip().upper() for s in manual_text.split(",") if s.strip()]
-            page_size = page_number = None
-
-        min_sources = st.slider(
-            "Minimum kaç borsadan veri gelsin", 1, max(len(selected_exchanges), 1),
-            min(2, max(len(selected_exchanges), 1)),
-            help="Önerilen: seçtiğiniz borsa sayısının yarısı kadar. Seçtiğiniz TÜM borsaları "
-                 "şart koşarsanız (max değer), bir coin sadece o borsaların hepsinde birden "
-                 "bulunursa sonuçlara girer — bu genelde sonuç sayısını çok azaltır."
-        )
-
-    st.subheader("Analiz Ayarları")
-    kline_limit = st.select_slider("Geçmiş veri uzunluğu (gün)", options=[200, 365, 500, 1000], value=365)
-    cluster_window = st.slider(
-        "Küme analizi penceresi (gün)", 30, 200, 90, step=10,
-        help="Şort likidasyon kümeleri bu son N günlük hareketten hesaplanır."
-    )
+    exchange = st.radio("Borsa", EXCHANGE_OPTIONS, format_func=lambda x: x.upper())
     min_score = st.slider("Minimum tükenme skoru", 0, 100, 30)
-
-    with st.expander("⚙️ Gelişmiş: istek gruplama ayarları"):
-        st.caption("Bu ayar YUKARIDAKİ sayfa/coin seçiminden farklı — sadece seçilen coinlerin "
-                   "borsalara ne hızda sorgulanacağını kontrol eder (rate-limit koruması).")
-        batch_size = st.slider(
-            "Grup büyüklüğü (kaç coin)", 5, 100, 25, step=5,
-            help="Seçtiğiniz coinler bu büyüklükte gruplara bölünüp sırayla taranır."
-        )
-        batch_pause = st.slider(
-            "Gruplar arası bekleme (saniye)", 0.0, 10.0, 3.0, step=0.5,
-            help="Rate-limit banına takılıyorsanız bu süreyi artırın."
-        )
-
     run_button = st.button("🔍 Taramayı Başlat", type="primary")
 
-    with st.expander("🔧 Tek borsa/coin testi (teşhis)"):
-        st.caption("Tüm taramayı beklemeden tek bir borsa+coin kombinasyonunu test edin.")
-        test_ex = st.selectbox("Borsa", api.EXCHANGES, key="test_ex")
-        test_symbol = st.text_input("Coin (örn. BTC)", value="BTC", key="test_symbol")
+    with st.expander("🔧 Tek coin testi (teşhis)"):
+        st.caption("Tüm taramayı beklemeden tek bir coin'i test edin.")
+        test_symbol = st.text_input("Coin (örn. BTC)", value="BTC")
         if st.button("Test Et"):
             try:
-                df = api.debug_fetch_klines(test_ex, test_symbol.upper(), limit=5)
-                st.success(f"{test_ex} / {test_symbol.upper()} — {len(df)} satır alındı")
+                df = api.debug_fetch_klines(exchange, test_symbol.upper(), limit=5)
+                st.success(f"{exchange.upper()} / {test_symbol.upper()} — {len(df)} satır alındı")
                 st.dataframe(df, use_container_width=True, hide_index=True)
             except Exception as e:
                 st.error(f"{type(e).__name__}: {e}")
 
 if "scan_results" not in st.session_state:
     st.session_state.scan_results = []
+if "scan_exchange" not in st.session_state:
+    st.session_state.scan_exchange = None
 
 if run_button:
-    if not selected_exchanges:
-        st.error("Lütfen soldan en az bir borsa seçin.")
+    try:
+        with st.spinner(f"{exchange.upper()} coin listesi alınıyor..."):
+            base_symbols = api.get_all_base_symbols(exchange)
+    except Exception as e:
+        st.error(f"{exchange.upper()} borsasından coin listesi alınamadı.")
+        st.code(str(e))
         st.stop()
 
-    if selection_mode == "Tüm coinler (basit mod)":
-        progress_bar = st.progress(0, text="Başlatılıyor...")
-        status_box = st.empty()
+    if not base_symbols:
+        st.error(f"{exchange.upper()} borsasından hiç coin bulunamadı.")
+        st.stop()
 
-        def _status(msg):
-            status_box.info(msg)
+    st.info(f"**{exchange.upper()}**: {len(base_symbols)} coin taranacak.")
 
-        def _progress(i, total, sym, batch_idx, total_batches):
-            if total > 0:
-                progress_bar.progress(min(i / total, 1.0), text=f"Taranıyor: {sym} ({i}/{total})")
+    progress_bar = st.progress(0, text="Taranıyor...")
+    batch_status = st.empty()
 
-        try:
-            results, used_exchange, fallback_errors = screener.run_scan_simple_auto(
-                exchange_priority, kline_limit=kline_limit, cluster_window=cluster_window,
-                batch_size=batch_size, batch_pause=batch_pause,
-                progress_callback=_progress, status_callback=_status
-            )
-        except Exception as e:
-            progress_bar.empty()
-            status_box.empty()
-            st.error("Denenen borsaların hepsinde tarama başarısız oldu.")
-            st.code(str(e))
-            st.stop()
+    def _progress(i, total, sym, batch_idx, total_batches):
+        batch_status.caption(f"Grup {batch_idx}/{total_batches}")
+        progress_bar.progress(min(i / total, 1.0), text=f"Taranıyor: {sym} ({i}/{total})")
 
-        progress_bar.empty()
-        status_box.empty()
+    results = screener.run_scan_multi(
+        base_symbols, kline_limit=KLINE_LIMIT, cluster_window=CLUSTER_WINDOW,
+        min_sources=1, batch_size=BATCH_SIZE, batch_pause=BATCH_PAUSE,
+        exchanges=[exchange], progress_callback=_progress
+    )
+    progress_bar.empty()
+    batch_status.empty()
 
-        if fallback_errors:
-            with st.expander("Atlanan borsalar (teşhis)"):
-                for ex, err in fallback_errors.items():
-                    st.text(f"{ex}: {err}")
-
-        st.session_state.scan_results = results
-        st.session_state.scan_exchange_count = 1
-        st.session_state.scan_is_simple = True
-        st.success(f"**{used_exchange.upper()}** ile tarama tamamlandı. {len(results)} coin analiz edildi.")
-
-    else:
-        if selection_mode == "Manuel liste":
-            if not manual_symbols:
-                st.error("Lütfen en az bir coin girin (örn: BTC, ETH, SOL).")
-                st.stop()
-            base_symbols = manual_symbols
-            universe_source = "manuel liste"
-            st.info(f"Manuel liste kullanılıyor: {len(base_symbols)} coin ({', '.join(base_symbols)}). "
-                    f"Kaynak borsalar: {', '.join(selected_exchanges)}.")
-        else:
-            needed = page_number * page_size
-            try:
-                with st.spinner("Hacme göre coin evreni alınıyor..."):
-                    full_universe, vol_source = api.get_top_symbols_by_volume(needed, exchanges=selected_exchanges)
-            except Exception as e:
-                st.error("Seçtiğiniz borsalardan coin listesi alınamadı.")
-                st.code(str(e))
-                st.stop()
-
-            start = (page_number - 1) * page_size
-            base_symbols = full_universe[start:start + page_size]
-            universe_source = f"{vol_source} hacim sıralaması — sayfa {page_number}"
-
-            if not base_symbols:
-                st.warning(
-                    f"Bu sayfada ({page_number}. sayfa, {start+1}-{start+page_size} arası) hiç coin "
-                    f"bulunamadı — evren sadece {len(full_universe)} coin içeriyor. Daha düşük bir "
-                    f"sayfa numarası deneyin."
-                )
-                st.stop()
-            elif len(base_symbols) < page_size:
-                st.warning(f"Bu sayfada sadece {len(base_symbols)} coin bulunabildi (evrenin sonuna gelindi).")
-
-            st.info(f"Coin evreni **{vol_source.upper()}** hacim sıralamasından alındı — "
-                    f"{page_number}. sayfa ({start+1}-{start+len(base_symbols)}. sıradaki "
-                    f"{len(base_symbols)} coin). Kaynak borsalar: {', '.join(selected_exchanges)}.")
-
-        progress_bar = st.progress(0, text="Taranıyor...")
-        batch_status = st.empty()
-
-        def _progress(i, total, sym, batch_idx, total_batches):
-            batch_status.caption(f"Grup {batch_idx}/{total_batches}")
-            progress_bar.progress(i / total, text=f"Taranıyor: {sym} ({i}/{total})")
-
-        results = screener.run_scan_multi(
-            base_symbols, kline_limit=kline_limit, cluster_window=cluster_window,
-            min_sources=min_sources, batch_size=batch_size, batch_pause=batch_pause,
-            exchanges=selected_exchanges, progress_callback=_progress
-        )
-        st.session_state.scan_results = results
-        st.session_state.scan_exchange_count = len(selected_exchanges)
-        st.session_state.scan_is_simple = False
-        progress_bar.empty()
-        batch_status.empty()
-        st.success(f"Tarama tamamlandı. {len(results)} coin analiz edildi.")
+    st.session_state.scan_results = results
+    st.session_state.scan_exchange = exchange
+    st.success(f"Tarama tamamlandı. {len(results)} coin analiz edildi.")
 
 results = st.session_state.scan_results
-scan_exchange_count = st.session_state.get("scan_exchange_count", len(api.EXCHANGES))
-scan_is_simple = st.session_state.get("scan_is_simple", False)
+scan_exchange = st.session_state.scan_exchange or exchange
+
+DISPLAY_COLS = ["symbol", "price", "exhaustion_score", "short_liq_consumed_pct",
+                "short_liq_remaining_near_pct", "rsi_14d", "funding_rate_pct"]
 
 if results:
-    table_rows = [{k: v for k, v in r.items() if k not in ("long_clusters", "short_clusters", "ohlcv")}
-                   for r in results]
+    table_rows = [{k: v for k, v in r.items()
+                   if k not in ("long_clusters", "short_clusters", "ohlcv", "kaynaklar", "kaynak_sayisi")}
+                  for r in results]
     df_table = pd.DataFrame(table_rows).sort_values("exhaustion_score", ascending=False)
 
-    if scan_is_simple:
-        st.subheader("Tüm taranan coinler (skora göre sıralı)")
-        simple_cols = ["symbol", "price", "exhaustion_score", "short_liq_consumed_pct",
-                       "short_liq_remaining_near_pct", "rsi_14d", "funding_rate_pct"]
-        st.dataframe(df_table[simple_cols].head(40), use_container_width=True, hide_index=True)
-    else:
-        st.subheader("Tüm taranan coinler (skora göre sıralı — eşik uygulanmadan)")
-        st.caption("Eşiği doğru kalibre edebilmeniz için skor dağılımının tamamı burada. "
-                   "'kaynaklar' sütunu her coin için hangi borsalardan veri alındığını gösterir.")
-        st.dataframe(df_table.head(25), use_container_width=True, hide_index=True)
+    st.subheader(f"Tüm taranan coinler ({scan_exchange.upper()}, skora göre sıralı)")
+    st.dataframe(df_table[DISPLAY_COLS].head(30), use_container_width=True, hide_index=True)
 
     c1, c2, c3 = st.columns(3)
     c1.metric("En yüksek skor", df_table["exhaustion_score"].max())
     c2.metric("Ortalama skor", round(df_table["exhaustion_score"].mean(), 1))
     c3.metric("En düşük skor", df_table["exhaustion_score"].min())
 
-    if not scan_is_simple:
-        avg_sources = df_table["kaynak_sayisi"].mean()
-        st.caption(f"Ortalama kaynak sayısı: {avg_sources:.1f} / {scan_exchange_count} "
-                   f"(düşükse yeni eklenen borsalardan biri çoğu coin için veri döndürmüyor olabilir — "
-                   f"soldaki 'Tek borsa/coin testi' ile kontrol edin)")
-
     df_filtered = df_table[df_table["exhaustion_score"] >= min_score]
 
-    st.subheader(f"Eşiği geçenler (skor ≥ {min_score})")
-
-    if scan_is_simple:
-        if df_filtered.empty:
-            st.write("Hiçbir coin bu eşiği geçmedi.")
-        else:
-            name_list = ", ".join(df_filtered["symbol"].tolist())
-            st.text_area(
-                "📋 Sadece isim listesi (kopyalayıp Coinglass'ta tek tek kontrol edin):",
-                value=name_list, height=100
-            )
-        st.dataframe(df_filtered[simple_cols], use_container_width=True, hide_index=True)
+    st.subheader(f"Sona yaklaşan coinler (skor ≥ {min_score})")
+    if df_filtered.empty:
+        st.write("Hiçbir coin bu eşiği geçmedi. Soldan skoru düşürmeyi deneyin.")
     else:
-        st.dataframe(df_filtered, use_container_width=True, hide_index=True)
+        name_list = ", ".join(df_filtered["symbol"].tolist())
+        st.text_area("📋 İsim listesi (kopyalayıp Coinglass'ta kontrol edin):", value=name_list, height=80)
+        st.dataframe(df_filtered[DISPLAY_COLS], use_container_width=True, hide_index=True)
 
-    if not df_filtered.empty:
         chosen = st.selectbox("Detay grafiği görmek için coin seçin:", df_filtered["symbol"].tolist())
         r = next(x for x in results if x["symbol"] == chosen)
 
@@ -290,9 +123,6 @@ if results:
         short_clusters = r["short_clusters"]
         long_clusters = r["long_clusters"]
 
-        # Only keep bins that are actually meaningful clusters (top ~35%
-        # by weight) so the chart shows distinct bars with gaps between
-        # them — like Coinglass — instead of a uniform painted ladder.
         nonzero_short = short_clusters[short_clusters["weight"] > 0]["weight"]
         nonzero_long = long_clusters[long_clusters["weight"] > 0]["weight"]
         short_threshold = nonzero_short.quantile(0.65) if len(nonzero_short) else 0
@@ -304,10 +134,10 @@ if results:
         long_display["mid"] = (long_display["price_low"] + long_display["price_high"]) / 2
         bin_height = (short_clusters["price_high"].iloc[0] - short_clusters["price_low"].iloc[0])
 
-        # zoom the y-axis to where the actual clusters + recent price live,
-        # so we're not stretched out to the full synthetic bin range
-        price_lo = min(df["low"].tail(120).min(), short_display["mid"].min() if len(short_display) else df["low"].min())
-        price_hi = max(df["high"].tail(120).max(), short_display["mid"].max() if len(short_display) else df["high"].max())
+        price_lo = min(df["low"].tail(120).min(),
+                        short_display["mid"].min() if len(short_display) else df["low"].min())
+        price_hi = max(df["high"].tail(120).max(),
+                        short_display["mid"].max() if len(short_display) else df["high"].max())
         pad = (price_hi - price_lo) * 0.08
         y_range = [price_lo - pad, price_hi + pad]
 
@@ -315,7 +145,6 @@ if results:
             rows=1, cols=2, shared_yaxes=True,
             column_widths=[0.22, 0.78], horizontal_spacing=0.01,
         )
-
         fig.add_trace(go.Bar(
             y=short_display["mid"], x=short_display["weight"], orientation="h",
             marker_color="orange", name="Şort kümeleri", width=bin_height * 0.9,
@@ -324,7 +153,6 @@ if results:
             y=long_display["mid"], x=-long_display["weight"], orientation="h",
             marker_color="mediumseagreen", name="Long kümeleri", width=bin_height * 0.9,
         ), row=1, col=1)
-
         fig.add_trace(go.Candlestick(
             x=df["open_time"], open=df["open"], high=df["high"],
             low=df["low"], close=df["close"], name=chosen
@@ -337,25 +165,21 @@ if results:
         fig.update_yaxes(range=y_range, row=1, col=2)
         fig.update_xaxes(rangeslider_visible=False, row=1, col=2)
         fig.update_layout(
-            title=f"{chosen} — Tahmini Likidasyon Kümeleri ({r['kaynaklar']} birleşimi)",
-            height=650, barmode="overlay", showlegend=True,
-            bargap=0.15,
+            title=f"{chosen} — Tahmini Likidasyon Kümeleri ({scan_exchange.upper()})",
+            height=650, barmode="overlay", showlegend=True, bargap=0.15,
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3 = st.columns(3)
         c1.metric("Tükenme Skoru", r["exhaustion_score"])
         c2.metric("Temizlenen Şort Likidasyon %", f"{r['short_liq_consumed_pct']}%")
         c3.metric("Yakında Kalan Şort Likidasyon %", f"{r['short_liq_remaining_near_pct']}%")
-        c4.metric("Funding Rate", f"%{r['funding_rate_pct']}" if r['funding_rate_pct'] is not None else "N/A")
-        c5.metric("Kaynak Sayısı", f"{r['kaynak_sayisi']}/{scan_exchange_count}")
 else:
     st.info("Taramayı başlatmak için soldaki 'Taramayı Başlat' butonuna basın.")
 
 st.markdown("---")
 st.caption(
     "⚠️ Bu araç yatırım tavsiyesi değildir. Likidasyon kümeleri gerçek OI/order-flow "
-    "verisi yerine fiyat+hacim üzerinden istatistiksel bir TAHMİNDİR. Coinglass'ın "
-    "gösterdiği haritalarla birebir örtüşmeyebilir. Kaldıraçlı işlemler yüksek risk "
-    "içerir, kendi araştırmanızı yapın."
+    "verisi yerine fiyat+hacim üzerinden istatistiksel bir TAHMİNDİR. Kaldıraçlı işlemler "
+    "yüksek risk içerir, kendi araştırmanızı yapın."
 )
