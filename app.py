@@ -10,7 +10,7 @@ import screener
 st.set_page_config(page_title="Şort Sıkışması Tarayıcı", layout="wide")
 
 st.title("📉 Tahmini Şort Likidasyon Kümesi Tarayıcısı")
-st.caption("🔧 Kod sürümü: v14-simple-mode (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
+st.caption("🔧 Kod sürümü: v15-auto-exchange-fallback (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
 st.caption(f"📦 Modül sürümleri — app: v13 | {api.MODULE_VERSION} | {screener.MODULE_VERSION}")
 
 st.markdown("""
@@ -39,8 +39,18 @@ with st.sidebar:
     )
 
     if simple_mode:
-        simple_exchange = st.selectbox("Hangi borsa?", api.EXCHANGES, index=0)
-        selected_exchanges = [simple_exchange]
+        st.caption("Birincil borsa önce denenir; ilk birkaç coin'de sorun görülürse "
+                   "(rate-limit/ban belirtisi) otomatik olarak yedek borsaya geçilir.")
+        col1, col2 = st.columns(2)
+        with col1:
+            default_primary = api.EXCHANGES.index("binance") if "binance" in api.EXCHANGES else 0
+            primary_exchange = st.selectbox("Birincil borsa", api.EXCHANGES, index=default_primary)
+        with col2:
+            fallback_options = [e for e in api.EXCHANGES if e != primary_exchange]
+            default_fallback = fallback_options.index("bybit") if "bybit" in fallback_options else 0
+            fallback_exchange = st.selectbox("Yedek borsa", fallback_options, index=default_fallback)
+        exchange_priority = [primary_exchange, fallback_exchange]
+        selected_exchanges = exchange_priority
         min_sources = 1
         page_size = page_number = None
         manual_symbols = None
@@ -132,75 +142,97 @@ if run_button:
         st.stop()
 
     if selection_mode == "Tüm coinler (basit mod)":
+        progress_bar = st.progress(0, text="Başlatılıyor...")
+        status_box = st.empty()
+
+        def _status(msg):
+            status_box.info(msg)
+
+        def _progress(i, total, sym, batch_idx, total_batches):
+            if total > 0:
+                progress_bar.progress(min(i / total, 1.0), text=f"Taranıyor: {sym} ({i}/{total})")
+
         try:
-            with st.spinner(f"{simple_exchange.upper()}'in tüm coin listesi alınıyor..."):
-                base_symbols = api.get_all_base_symbols(simple_exchange)
-        except Exception as e:
-            st.error(f"{simple_exchange} borsasından coin listesi alınamadı.")
-            st.code(str(e))
-            st.stop()
-
-        if not base_symbols:
-            st.error(f"{simple_exchange} borsasından hiç coin listesi alınamadı.")
-            st.stop()
-
-        universe_source = f"{simple_exchange} — tüm coinler"
-        st.info(f"**{simple_exchange.upper()}**'in tüm coinleri taranacak: {len(base_symbols)} coin. "
-                f"Sadece bu tek borsadan veri alınacak, karşılaştırma/birleştirme yapılmayacak.")
-    elif selection_mode == "Manuel liste":
-        if not manual_symbols:
-            st.error("Lütfen en az bir coin girin (örn: BTC, ETH, SOL).")
-            st.stop()
-        base_symbols = manual_symbols
-        universe_source = "manuel liste"
-        st.info(f"Manuel liste kullanılıyor: {len(base_symbols)} coin ({', '.join(base_symbols)}). "
-                f"Kaynak borsalar: {', '.join(selected_exchanges)}.")
-    else:
-        needed = page_number * page_size
-        try:
-            with st.spinner("Hacme göre coin evreni alınıyor..."):
-                full_universe, vol_source = api.get_top_symbols_by_volume(needed, exchanges=selected_exchanges)
-        except Exception as e:
-            st.error("Seçtiğiniz borsalardan coin listesi alınamadı.")
-            st.code(str(e))
-            st.stop()
-
-        start = (page_number - 1) * page_size
-        base_symbols = full_universe[start:start + page_size]
-        universe_source = f"{vol_source} hacim sıralaması — sayfa {page_number}"
-
-        if not base_symbols:
-            st.warning(
-                f"Bu sayfada ({page_number}. sayfa, {start+1}-{start+page_size} arası) hiç coin "
-                f"bulunamadı — evren sadece {len(full_universe)} coin içeriyor. Daha düşük bir "
-                f"sayfa numarası deneyin."
+            results, used_exchange, fallback_errors = screener.run_scan_simple_auto(
+                exchange_priority, kline_limit=kline_limit, cluster_window=cluster_window,
+                batch_size=batch_size, batch_pause=batch_pause,
+                progress_callback=_progress, status_callback=_status
             )
+        except Exception as e:
+            progress_bar.empty()
+            status_box.empty()
+            st.error("Denenen borsaların hepsinde tarama başarısız oldu.")
+            st.code(str(e))
             st.stop()
-        elif len(base_symbols) < page_size:
-            st.warning(f"Bu sayfada sadece {len(base_symbols)} coin bulunabildi (evrenin sonuna gelindi).")
 
-        st.info(f"Coin evreni **{vol_source.upper()}** hacim sıralamasından alındı — "
-                f"{page_number}. sayfa ({start+1}-{start+len(base_symbols)}. sıradaki "
-                f"{len(base_symbols)} coin). Kaynak borsalar: {', '.join(selected_exchanges)}.")
+        progress_bar.empty()
+        status_box.empty()
 
-    progress_bar = st.progress(0, text="Taranıyor...")
-    batch_status = st.empty()
+        if fallback_errors:
+            with st.expander("Atlanan borsalar (teşhis)"):
+                for ex, err in fallback_errors.items():
+                    st.text(f"{ex}: {err}")
 
-    def _progress(i, total, sym, batch_idx, total_batches):
-        batch_status.caption(f"Grup {batch_idx}/{total_batches}")
-        progress_bar.progress(i / total, text=f"Taranıyor: {sym} ({i}/{total})")
+        st.session_state.scan_results = results
+        st.session_state.scan_exchange_count = 1
+        st.session_state.scan_is_simple = True
+        st.success(f"**{used_exchange.upper()}** ile tarama tamamlandı. {len(results)} coin analiz edildi.")
 
-    results = screener.run_scan_multi(
-        base_symbols, kline_limit=kline_limit, cluster_window=cluster_window,
-        min_sources=min_sources, batch_size=batch_size, batch_pause=batch_pause,
-        exchanges=selected_exchanges, progress_callback=_progress
-    )
-    st.session_state.scan_results = results
-    st.session_state.scan_exchange_count = len(selected_exchanges)
-    st.session_state.scan_is_simple = simple_mode
-    progress_bar.empty()
-    batch_status.empty()
-    st.success(f"Tarama tamamlandı. {len(results)} coin analiz edildi.")
+    else:
+        if selection_mode == "Manuel liste":
+            if not manual_symbols:
+                st.error("Lütfen en az bir coin girin (örn: BTC, ETH, SOL).")
+                st.stop()
+            base_symbols = manual_symbols
+            universe_source = "manuel liste"
+            st.info(f"Manuel liste kullanılıyor: {len(base_symbols)} coin ({', '.join(base_symbols)}). "
+                    f"Kaynak borsalar: {', '.join(selected_exchanges)}.")
+        else:
+            needed = page_number * page_size
+            try:
+                with st.spinner("Hacme göre coin evreni alınıyor..."):
+                    full_universe, vol_source = api.get_top_symbols_by_volume(needed, exchanges=selected_exchanges)
+            except Exception as e:
+                st.error("Seçtiğiniz borsalardan coin listesi alınamadı.")
+                st.code(str(e))
+                st.stop()
+
+            start = (page_number - 1) * page_size
+            base_symbols = full_universe[start:start + page_size]
+            universe_source = f"{vol_source} hacim sıralaması — sayfa {page_number}"
+
+            if not base_symbols:
+                st.warning(
+                    f"Bu sayfada ({page_number}. sayfa, {start+1}-{start+page_size} arası) hiç coin "
+                    f"bulunamadı — evren sadece {len(full_universe)} coin içeriyor. Daha düşük bir "
+                    f"sayfa numarası deneyin."
+                )
+                st.stop()
+            elif len(base_symbols) < page_size:
+                st.warning(f"Bu sayfada sadece {len(base_symbols)} coin bulunabildi (evrenin sonuna gelindi).")
+
+            st.info(f"Coin evreni **{vol_source.upper()}** hacim sıralamasından alındı — "
+                    f"{page_number}. sayfa ({start+1}-{start+len(base_symbols)}. sıradaki "
+                    f"{len(base_symbols)} coin). Kaynak borsalar: {', '.join(selected_exchanges)}.")
+
+        progress_bar = st.progress(0, text="Taranıyor...")
+        batch_status = st.empty()
+
+        def _progress(i, total, sym, batch_idx, total_batches):
+            batch_status.caption(f"Grup {batch_idx}/{total_batches}")
+            progress_bar.progress(i / total, text=f"Taranıyor: {sym} ({i}/{total})")
+
+        results = screener.run_scan_multi(
+            base_symbols, kline_limit=kline_limit, cluster_window=cluster_window,
+            min_sources=min_sources, batch_size=batch_size, batch_pause=batch_pause,
+            exchanges=selected_exchanges, progress_callback=_progress
+        )
+        st.session_state.scan_results = results
+        st.session_state.scan_exchange_count = len(selected_exchanges)
+        st.session_state.scan_is_simple = False
+        progress_bar.empty()
+        batch_status.empty()
+        st.success(f"Tarama tamamlandı. {len(results)} coin analiz edildi.")
 
 results = st.session_state.scan_results
 scan_exchange_count = st.session_state.get("scan_exchange_count", len(api.EXCHANGES))
