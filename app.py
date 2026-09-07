@@ -18,6 +18,10 @@ EXCHANGE_OPTIONS = ["binance", "bybit", "okx"]
 
 st.title("📉 Şort Likidasyon Tarayıcısı")
 st.caption("🔧 Kod sürümü: v17-error-diagnostics (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
+st.caption(f"📦 Modül sürümleri — data_fetcher: {getattr(api, 'MODULE_VERSION', '❌ MODULE_VERSION YOK — dosya çok eski!')} "
+           f"| screener: {getattr(screener, 'MODULE_VERSION', '❌ MODULE_VERSION YOK — dosya çok eski!')}")
+st.caption(f"🧪 get_klines_from mevcut mu: {hasattr(api, 'get_klines_from')} | "
+           f"get_all_base_symbols mevcut mu: {hasattr(api, 'get_all_base_symbols')}")
 
 st.markdown("""
 Seçtiğiniz borsadaki **tüm futures coinlerini tek seferde** tarar ve yıllık likidasyon
