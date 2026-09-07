@@ -10,7 +10,7 @@ import screener
 st.set_page_config(page_title="Şort Sıkışması Tarayıcı", layout="wide")
 
 st.title("📉 Tahmini Şort Likidasyon Kümesi Tarayıcısı")
-st.caption("🔧 Kod sürümü: v13-selectable-10-exchanges (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
+st.caption("🔧 Kod sürümü: v14-simple-mode (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
 st.caption(f"📦 Modül sürümleri — app: v13 | {api.MODULE_VERSION} | {screener.MODULE_VERSION}")
 
 st.markdown("""
@@ -30,53 +30,70 @@ o coin için veri olanlar toplanıp tek bir kümede birleştirilir.
 with st.sidebar:
     st.header("Ayarlar")
 
-    st.subheader("Borsa Seçimi")
-    selected_exchanges = st.multiselect(
-        "Hangi borsaların verisi birleştirilsin?",
-        options=api.EXCHANGES,
-        default=api.EXCHANGES[:5],  # Binance, Bybit, OKX, Bitget, Gate.io — en test edilmiş 5'i
-        help="Örn. sadece 'binance' ve 'kucoin' seçerseniz, kümeler sadece bu ikisinden "
-             "birleştirilir. KuCoin/MEXC/HTX/CoinEx/BingX henüz canlı test edilmedi — "
-             "önce aşağıdaki test panelinden deneyin."
+    simple_mode = st.checkbox(
+        "🎯 Basit Mod: tek borsa, sadece isim listesi", value=False,
+        help="Çoklu borsa birleştirme ve detaylı grafik olmadan, TEK bir borsanın "
+             "TÜM coinlerini tarar ve sadece coin adı + skor listesi verir. Coinglass'ta "
+             "kendiniz kontrol edeceğiniz için buradan sadece 'hangi coin'e bakmalıyım' "
+             "listesini almak isterseniz bu modu kullanın — çok daha hızlı ve düşük risklidir."
     )
-    if not selected_exchanges:
-        st.warning("En az bir borsa seçmelisiniz.")
 
-    st.subheader("Coin Seçimi")
-    selection_mode = st.radio(
-        "Coin seçim modu", ["Hacim sıralaması (sayfalı)", "Manuel liste"],
-        help="Sayfalı mod: Coinglass'ın sayfaları gibi, hacim sırasına göre "
-             "belirli bir aralığı tararsınız (ör. 51-100. coinler). Manuel: "
-             "istediğiniz coinleri kendiniz yazarsınız."
-    )
-    if selection_mode == "Hacim sıralaması (sayfalı)":
-        page_size = st.slider("Sayfa başına coin sayısı", 10, 100, 50, step=10)
-        page_number = st.number_input(
-            "Sayfa numarası (1 = en yüksek hacimliler)", min_value=1, value=1, step=1
-        )
-        st.caption(f"Bu tarama, hacme göre {(page_number-1)*page_size + 1}. ile "
-                   f"{page_number*page_size}. sıradaki coinleri kapsayacak.")
-        manual_symbols = None
-    else:
-        manual_text = st.text_area(
-            "Coin listesi (virgülle ayırın)", value="BTC, ETH, SOL, XRP, DOGE",
-            help="Örnek: BTC, ETH, SOL, XRP, DOGE"
-        )
-        manual_symbols = [s.strip().upper() for s in manual_text.split(",") if s.strip()]
+    if simple_mode:
+        simple_exchange = st.selectbox("Hangi borsa?", api.EXCHANGES, index=0)
+        selected_exchanges = [simple_exchange]
+        min_sources = 1
         page_size = page_number = None
+        manual_symbols = None
+        selection_mode = "Tüm coinler (basit mod)"
+    else:
+        st.subheader("Borsa Seçimi")
+        selected_exchanges = st.multiselect(
+            "Hangi borsaların verisi birleştirilsin?",
+            options=api.EXCHANGES,
+            default=api.EXCHANGES[:5],
+            help="Örn. sadece 'binance' ve 'kucoin' seçerseniz, kümeler sadece bu ikisinden "
+                 "birleştirilir. KuCoin/MEXC/HTX/CoinEx/BingX henüz canlı test edilmedi — "
+                 "önce aşağıdaki test panelinden deneyin."
+        )
+        if not selected_exchanges:
+            st.warning("En az bir borsa seçmelisiniz.")
+
+        st.subheader("Coin Seçimi")
+        selection_mode = st.radio(
+            "Coin seçim modu", ["Hacim sıralaması (sayfalı)", "Manuel liste"],
+            help="Sayfalı mod: Coinglass'ın sayfaları gibi, hacim sırasına göre "
+                 "belirli bir aralığı tararsınız (ör. 51-100. coinler). Manuel: "
+                 "istediğiniz coinleri kendiniz yazarsınız."
+        )
+        if selection_mode == "Hacim sıralaması (sayfalı)":
+            page_size = st.slider("Sayfa başına coin sayısı", 10, 100, 50, step=10)
+            page_number = st.number_input(
+                "Sayfa numarası (1 = en yüksek hacimliler)", min_value=1, value=1, step=1
+            )
+            st.caption(f"Bu tarama, hacme göre {(page_number-1)*page_size + 1}. ile "
+                       f"{page_number*page_size}. sıradaki coinleri kapsayacak.")
+            manual_symbols = None
+        else:
+            manual_text = st.text_area(
+                "Coin listesi (virgülle ayırın)", value="BTC, ETH, SOL, XRP, DOGE",
+                help="Örnek: BTC, ETH, SOL, XRP, DOGE"
+            )
+            manual_symbols = [s.strip().upper() for s in manual_text.split(",") if s.strip()]
+            page_size = page_number = None
+
+        min_sources = st.slider(
+            "Minimum kaç borsadan veri gelsin", 1, max(len(selected_exchanges), 1),
+            min(2, max(len(selected_exchanges), 1)),
+            help="Önerilen: seçtiğiniz borsa sayısının yarısı kadar. Seçtiğiniz TÜM borsaları "
+                 "şart koşarsanız (max değer), bir coin sadece o borsaların hepsinde birden "
+                 "bulunursa sonuçlara girer — bu genelde sonuç sayısını çok azaltır."
+        )
 
     st.subheader("Analiz Ayarları")
     kline_limit = st.select_slider("Geçmiş veri uzunluğu (gün)", options=[200, 365, 500, 1000], value=365)
     cluster_window = st.slider(
         "Küme analizi penceresi (gün)", 30, 200, 90, step=10,
         help="Şort likidasyon kümeleri bu son N günlük hareketten hesaplanır."
-    )
-    min_sources = st.slider(
-        "Minimum kaç borsadan veri gelsin", 1, max(len(selected_exchanges), 1),
-        min(2, max(len(selected_exchanges), 1)),
-        help="Önerilen: seçtiğiniz borsa sayısının yarısı kadar. Seçtiğiniz TÜM borsaları "
-             "şart koşarsanız (max değer), bir coin sadece o borsaların hepsinde birden "
-             "bulunursa sonuçlara girer — bu genelde sonuç sayısını çok azaltır."
     )
     min_score = st.slider("Minimum tükenme skoru", 0, 100, 30)
 
@@ -114,7 +131,23 @@ if run_button:
         st.error("Lütfen soldan en az bir borsa seçin.")
         st.stop()
 
-    if selection_mode == "Manuel liste":
+    if selection_mode == "Tüm coinler (basit mod)":
+        try:
+            with st.spinner(f"{simple_exchange.upper()}'in tüm coin listesi alınıyor..."):
+                base_symbols = api.get_all_base_symbols(simple_exchange)
+        except Exception as e:
+            st.error(f"{simple_exchange} borsasından coin listesi alınamadı.")
+            st.code(str(e))
+            st.stop()
+
+        if not base_symbols:
+            st.error(f"{simple_exchange} borsasından hiç coin listesi alınamadı.")
+            st.stop()
+
+        universe_source = f"{simple_exchange} — tüm coinler"
+        st.info(f"**{simple_exchange.upper()}**'in tüm coinleri taranacak: {len(base_symbols)} coin. "
+                f"Sadece bu tek borsadan veri alınacak, karşılaştırma/birleştirme yapılmayacak.")
+    elif selection_mode == "Manuel liste":
         if not manual_symbols:
             st.error("Lütfen en az bir coin girin (örn: BTC, ETH, SOL).")
             st.stop()
@@ -164,36 +197,58 @@ if run_button:
     )
     st.session_state.scan_results = results
     st.session_state.scan_exchange_count = len(selected_exchanges)
+    st.session_state.scan_is_simple = simple_mode
     progress_bar.empty()
     batch_status.empty()
     st.success(f"Tarama tamamlandı. {len(results)} coin analiz edildi.")
 
 results = st.session_state.scan_results
 scan_exchange_count = st.session_state.get("scan_exchange_count", len(api.EXCHANGES))
+scan_is_simple = st.session_state.get("scan_is_simple", False)
 
 if results:
     table_rows = [{k: v for k, v in r.items() if k not in ("long_clusters", "short_clusters", "ohlcv")}
                    for r in results]
     df_table = pd.DataFrame(table_rows).sort_values("exhaustion_score", ascending=False)
 
-    st.subheader("Tüm taranan coinler (skora göre sıralı — eşik uygulanmadan)")
-    st.caption("Eşiği doğru kalibre edebilmeniz için skor dağılımının tamamı burada. "
-               "'kaynaklar' sütunu her coin için hangi borsalardan veri alındığını gösterir.")
-    st.dataframe(df_table.head(25), use_container_width=True, hide_index=True)
+    if scan_is_simple:
+        st.subheader("Tüm taranan coinler (skora göre sıralı)")
+        simple_cols = ["symbol", "price", "exhaustion_score", "short_liq_consumed_pct",
+                       "short_liq_remaining_near_pct", "rsi_14d", "funding_rate_pct"]
+        st.dataframe(df_table[simple_cols].head(40), use_container_width=True, hide_index=True)
+    else:
+        st.subheader("Tüm taranan coinler (skora göre sıralı — eşik uygulanmadan)")
+        st.caption("Eşiği doğru kalibre edebilmeniz için skor dağılımının tamamı burada. "
+                   "'kaynaklar' sütunu her coin için hangi borsalardan veri alındığını gösterir.")
+        st.dataframe(df_table.head(25), use_container_width=True, hide_index=True)
+
     c1, c2, c3 = st.columns(3)
     c1.metric("En yüksek skor", df_table["exhaustion_score"].max())
     c2.metric("Ortalama skor", round(df_table["exhaustion_score"].mean(), 1))
     c3.metric("En düşük skor", df_table["exhaustion_score"].min())
 
-    avg_sources = df_table["kaynak_sayisi"].mean()
-    st.caption(f"Ortalama kaynak sayısı: {avg_sources:.1f} / {scan_exchange_count} "
-               f"(düşükse yeni eklenen borsalardan biri çoğu coin için veri döndürmüyor olabilir — "
-               f"soldaki 'Tek borsa/coin testi' ile kontrol edin)")
+    if not scan_is_simple:
+        avg_sources = df_table["kaynak_sayisi"].mean()
+        st.caption(f"Ortalama kaynak sayısı: {avg_sources:.1f} / {scan_exchange_count} "
+                   f"(düşükse yeni eklenen borsalardan biri çoğu coin için veri döndürmüyor olabilir — "
+                   f"soldaki 'Tek borsa/coin testi' ile kontrol edin)")
 
     df_filtered = df_table[df_table["exhaustion_score"] >= min_score]
 
     st.subheader(f"Eşiği geçenler (skor ≥ {min_score})")
-    st.dataframe(df_filtered, use_container_width=True, hide_index=True)
+
+    if scan_is_simple:
+        if df_filtered.empty:
+            st.write("Hiçbir coin bu eşiği geçmedi.")
+        else:
+            name_list = ", ".join(df_filtered["symbol"].tolist())
+            st.text_area(
+                "📋 Sadece isim listesi (kopyalayıp Coinglass'ta tek tek kontrol edin):",
+                value=name_list, height=100
+            )
+        st.dataframe(df_filtered[simple_cols], use_container_width=True, hide_index=True)
+    else:
+        st.dataframe(df_filtered, use_container_width=True, hide_index=True)
 
     if not df_filtered.empty:
         chosen = st.selectbox("Detay grafiği görmek için coin seçin:", df_filtered["symbol"].tolist())
