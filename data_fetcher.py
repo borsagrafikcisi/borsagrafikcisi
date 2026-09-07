@@ -522,7 +522,43 @@ _TOP_SYMBOL_FETCHERS = {
 }
 
 
-def get_klines_from(exchange, base_symbol, interval="1d", limit=500):
+def _base_from_symbol(exchange, symbol):
+    """Reverse of _format_symbol — extracts the base ticker from a raw
+    exchange symbol string (e.g. 'ETHUSDT' -> 'ETH', 'XBTUSDTM' -> 'BTC')."""
+    if exchange in ("binance", "bybit", "bitget", "coinex"):
+        return symbol[:-4] if symbol.endswith("USDT") else None
+    if exchange == "okx":
+        if not symbol.endswith("-USDT-SWAP"):
+            return None
+        base = symbol.split("-")[0]
+        return None if base in _STOCK_TICKER_DENYLIST else base
+    if exchange == "gateio":
+        return symbol[:-5] if symbol.endswith("_USDT") else None
+    if exchange == "kucoin":
+        if not symbol.endswith("USDTM"):
+            return None
+        core = symbol[:-5]
+        return "BTC" if core == "XBT" else core
+    if exchange == "mexc":
+        return symbol[:-5] if symbol.endswith("_USDT") else None
+    if exchange == "htx":
+        return symbol[:-5] if symbol.endswith("-USDT") else None
+    if exchange == "bingx":
+        return symbol[:-5] if symbol.endswith("-USDT") else None
+    return None
+
+
+def get_all_base_symbols(exchange):
+    """The FULL list of base tickers (e.g. 'BTC', 'ETH', ...) that one
+    exchange lists — not just the top-by-volume subset. Use this for a
+    single-exchange 'scan everything' mode."""
+    raw_syms = _get_all_symbols(exchange)
+    bases = set()
+    for s in raw_syms:
+        b = _base_from_symbol(exchange, s)
+        if b:
+            bases.add(b)
+    return sorted(bases)
     """Returns None (does not raise) if this exchange doesn't list the
     symbol or the request fails — callers treat a missing exchange as
     'not available there' and just use whichever DO respond."""
