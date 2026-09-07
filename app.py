@@ -17,7 +17,7 @@ BATCH_PAUSE = 3.0
 EXCHANGE_OPTIONS = ["binance", "bybit", "okx"]
 
 st.title("📉 Şort Likidasyon Tarayıcısı")
-st.caption("🔧 Kod sürümü: v16-simplified")
+st.caption("🔧 Kod sürümü: v17-error-diagnostics (bu satırı görüyorsanız güncel kod çalışıyor demektir)")
 
 st.markdown("""
 Seçtiğiniz borsadaki **tüm futures coinlerini tek seferde** tarar ve yıllık likidasyon
@@ -74,7 +74,7 @@ if run_button:
         batch_status.caption(f"Grup {batch_idx}/{total_batches}")
         progress_bar.progress(min(i / total, 1.0), text=f"Taranıyor: {sym} ({i}/{total})")
 
-    results = screener.run_scan_multi(
+    results, sample_errors = screener.run_scan_multi(
         base_symbols, kline_limit=KLINE_LIMIT, cluster_window=CLUSTER_WINDOW,
         min_sources=1, batch_size=BATCH_SIZE, batch_pause=BATCH_PAUSE,
         exchanges=[exchange], progress_callback=_progress
@@ -85,6 +85,11 @@ if run_button:
     st.session_state.scan_results = results
     st.session_state.scan_exchange = exchange
     st.success(f"Tarama tamamlandı. {len(results)} coin analiz edildi.")
+
+    if len(results) == 0 and sample_errors:
+        st.error("Hiç coin analiz edilemedi. İlk birkaç coin'den gerçek hata örneği:")
+        for err in sample_errors:
+            st.code(err)
 
 results = st.session_state.scan_results
 scan_exchange = st.session_state.scan_exchange or exchange
