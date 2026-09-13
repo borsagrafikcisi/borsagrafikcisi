@@ -102,9 +102,9 @@ def compute_lrc(high, low, lrc_len_high=300, lrc_len_low=300) -> pd.DataFrame:
 def build_ratio_ohlc(stock_df, index_df) -> pd.DataFrame:
     aligned = stock_df.join(index_df, how="inner", lsuffix="_stk", rsuffix="_idx")
     df = pd.DataFrame(index=aligned.index)
-    df["high"] = aligned["High_stk"] / aligned["High_idx"]
-    df["low"] = aligned["Low_stk"] / aligned["Low_idx"]
-    df["close"] = aligned["Close_stk"] / aligned["Close_idx"]
+    df["high"] = aligned["high_stk"] / aligned["high_idx"]
+    df["low"] = aligned["low_stk"] / aligned["low_idx"]
+    df["close"] = aligned["close_stk"] / aligned["close_idx"]
     return df
 
 
