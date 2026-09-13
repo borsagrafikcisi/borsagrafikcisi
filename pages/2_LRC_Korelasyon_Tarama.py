@@ -227,23 +227,34 @@ if not BORSAPY_AVAILABLE:
 with st.sidebar:
     st.header("Tarama Ayarları")
     index_symbol = st.text_input(
-        "Endeks (GETİRİ endeksi)",
+        "Endeks (GETİRİ endeksi - oranın paydası)",
         value="XU100_CFNNTLTL",
         help=(
             "Orijinal TradingView taramasındaki gibi BIST 100 GETİRİ endeksi "
             "kullanılır (düz XU100 fiyat endeksi DEĞİL)."
         ),
     )
-    stock_input = st.text_area(
-        "Hisseler (virgülle ayır)",
-        value="AYEN, AKBNK, THYAO, GARAN",
+
+    tarama_kapsami = st.radio(
+        "Taranacak Hisseler",
+        options=["Tüm BIST Hisseleri (XUTUM)", "Manuel Liste Gir"],
+        index=0,
     )
-    stock_symbols = [s.strip().upper() for s in stock_input.split(",") if s.strip()]
+
+    if tarama_kapsami == "Manuel Liste Gir":
+        stock_input = st.text_area(
+            "Hisseler (virgülle ayır)",
+            value="AYEN, AKBNK, THYAO, GARAN",
+        )
+        stock_symbols = [s.strip().upper() for s in stock_input.split(",") if s.strip()]
+    else:
+        stock_symbols = None  # Taramayı başlatınca XUTUM bileşenleri çekilecek
+        st.caption("Tüm BIST'te işlem gören hisseler taranacak (BIST TÜM - XUTUM bileşenleri).")
 
     selected_timeframes = st.multiselect(
         "Periyotlar",
         options=list(TIMEFRAMES.keys()),
-        default=["1gun", "2gun", "3gun", "1hafta", "1ay"],
+        default=["1gun"],
     )
 
     # LRC uzunluğu sabit 300/300 (orijinal Pine Script ile birebir aynı)
@@ -254,8 +265,18 @@ with st.sidebar:
     run_scan = st.button("🔍 Taramayı Başlat", type="primary", use_container_width=True)
 
 if run_scan:
+    if stock_symbols is None:
+        with st.spinner("BIST TÜM (XUTUM) hisse listesi çekiliyor..."):
+            try:
+                xutum = bp.Index("XUTUM")
+                stock_symbols = list(xutum.component_symbols)
+            except Exception as e:
+                st.error(f"Tüm hisse listesi çekilemedi: {e}")
+                st.stop()
+        st.caption(f"Taranacak toplam hisse sayısı: {len(stock_symbols)}")
+
     if not stock_symbols:
-        st.warning("En az bir hisse girmelisin.")
+        st.warning("Taranacak hisse bulunamadı.")
         st.stop()
     if not selected_timeframes:
         st.warning("En az bir periyot seçmelisin.")
@@ -265,8 +286,7 @@ if run_scan:
     total = len(stock_symbols) * len(selected_timeframes)
     done = 0
 
-    matrix = pd.DataFrame(index=stock_symbols, columns=selected_timeframes, dtype=object)
-    detail_rows = []
+    kesisim_bulunanlar = []
 
     for stock in stock_symbols:
         for tf in selected_timeframes:
@@ -274,38 +294,28 @@ if run_scan:
                 r = scan_pair_on_timeframe(stock, index_symbol, tf,
                                             lrc_len_high=lrc_len, lrc_len_low=lrc_len,
                                             gerikontrol=gerikontrol)
-                if r["not_enough_data"]:
-                    cell = f"Yetersiz veri ({r['available_bars']}/{lrc_len})"
-                else:
-                    cell = "✅ KESİŞİM" if r["condition"] else "—"
-                matrix.loc[stock, tf] = cell
-                detail_rows.append({
-                    "Hisse": stock, "Periyot": tf,
-                    "Toplam Bar (Çekilen Veri)": r["available_bars"],
-                    "Son Kesişimden Bu Yana Bar": r["bars_since_cross"],
-                    "Sonuç": cell,
-                })
-            except Exception as e:
-                matrix.loc[stock, tf] = f"Hata: {e}"
-                detail_rows.append({
-                    "Hisse": stock, "Periyot": tf,
-                    "Son Kesişimden Bu Yana Bar": None, "Sonuç": f"Hata: {e}",
-                })
+                if (not r["not_enough_data"]) and r["condition"]:
+                    kesisim_bulunanlar.append({
+                        "Hisse": stock,
+                        "Periyot": tf,
+                        "Son Kesişimden Bu Yana Bar": int(r["bars_since_cross"]),
+                        "Toplam Bar (Çekilen Veri)": r["available_bars"],
+                    })
+            except Exception:
+                pass  # Veri çekilemeyen / hatalı sembolleri sessizce atla
             done += 1
-            progress.progress(done / total, text=f"Taranıyor... ({done}/{total})")
+            if done % 5 == 0 or done == total:
+                progress.progress(done / total, text=f"Taranıyor... ({done}/{total})")
 
     progress.empty()
 
-    st.subheader("Hisse × Periyot Matrisi")
-    st.dataframe(matrix, use_container_width=True)
-
-    st.subheader("Detaylı Sonuçlar")
-    detail_df = pd.DataFrame(detail_rows)
-    st.dataframe(detail_df, use_container_width=True)
-
-    kesisim_var = detail_df[detail_df["Sonuç"] == "✅ KESİŞİM"]
-    if not kesisim_var.empty:
-        st.success(f"{len(kesisim_var)} adet kesişim sinyali bulundu.")
+    st.subheader(f"🎯 Kesişim Bulunan Sonuçlar ({index_symbol})")
+    if kesisim_bulunanlar:
+        sonuc_df = pd.DataFrame(kesisim_bulunanlar).sort_values(
+            ["Periyot", "Son Kesişimden Bu Yana Bar"]
+        )
+        st.dataframe(sonuc_df, use_container_width=True, hide_index=True)
+        st.success(f"Toplam {len(sonuc_df)} adet kesişim sinyali bulundu.")
     else:
         st.info("Seçilen kriterlerde kesişim sinyali bulunamadı.")
 else:
