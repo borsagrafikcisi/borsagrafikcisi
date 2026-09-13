@@ -123,34 +123,62 @@ def group_n_bars(df: pd.DataFrame, n: int) -> pd.DataFrame:
 
 
 TIMEFRAMES = {
-    "15dk":  {"base_interval": "15m", "bars_per_group": 1,  "bp_period": "5g"},
-    "30dk":  {"base_interval": "30m", "bars_per_group": 1,  "bp_period": "5g"},
-    "45dk":  {"base_interval": "45m", "bars_per_group": 1,  "bp_period": "5g"},
-    "1sa":   {"base_interval": "1h",  "bars_per_group": 1,  "bp_period": "1ay"},
-    "2sa":   {"base_interval": "1h",  "bars_per_group": 2,  "bp_period": "1ay"},
-    "3sa":   {"base_interval": "1h",  "bars_per_group": 3,  "bp_period": "1ay"},
-    "4sa":   {"base_interval": "1h",  "bars_per_group": 4,  "bp_period": "1ay"},
-    "5sa":   {"base_interval": "1h",  "bars_per_group": 5,  "bp_period": "1ay"},
-    "6sa":   {"base_interval": "1h",  "bars_per_group": 6,  "bp_period": "1ay"},
-    "8sa":   {"base_interval": "1h",  "bars_per_group": 8,  "bp_period": "1ay"},
-    "12sa":  {"base_interval": "1h",  "bars_per_group": 12, "bp_period": "1ay"},
-    "13sa":  {"base_interval": "1h",  "bars_per_group": 13, "bp_period": "1ay"},
-    "1gun":  {"base_interval": "1d",  "bars_per_group": 1,  "bp_period": "3ay"},
-    "2gun":  {"base_interval": "1d",  "bars_per_group": 2,  "bp_period": "3ay"},
-    "3gun":  {"base_interval": "1d",  "bars_per_group": 3,  "bp_period": "3ay"},
-    "4gun":  {"base_interval": "1d",  "bars_per_group": 4,  "bp_period": "3ay"},
-    "5gun":  {"base_interval": "1d",  "bars_per_group": 5,  "bp_period": "3ay"},
+    "15dk":  {"base_interval": "15m", "bars_per_group": 1,  "bp_period": "max"},
+    "30dk":  {"base_interval": "30m", "bars_per_group": 1,  "bp_period": "max"},
+    "45dk":  {"base_interval": "45m", "bars_per_group": 1,  "bp_period": "max"},
+    "1sa":   {"base_interval": "1h",  "bars_per_group": 1,  "bp_period": "max"},
+    "2sa":   {"base_interval": "1h",  "bars_per_group": 2,  "bp_period": "max"},
+    "3sa":   {"base_interval": "1h",  "bars_per_group": 3,  "bp_period": "max"},
+    "4sa":   {"base_interval": "1h",  "bars_per_group": 4,  "bp_period": "max"},
+    "5sa":   {"base_interval": "1h",  "bars_per_group": 5,  "bp_period": "max"},
+    "6sa":   {"base_interval": "1h",  "bars_per_group": 6,  "bp_period": "max"},
+    "8sa":   {"base_interval": "1h",  "bars_per_group": 8,  "bp_period": "max"},
+    "12sa":  {"base_interval": "1h",  "bars_per_group": 12, "bp_period": "max"},
+    "13sa":  {"base_interval": "1h",  "bars_per_group": 13, "bp_period": "max"},
+    "1gun":  {"base_interval": "1d",  "bars_per_group": 1,  "bp_period": "max"},
+    "2gun":  {"base_interval": "1d",  "bars_per_group": 2,  "bp_period": "max"},
+    "3gun":  {"base_interval": "1d",  "bars_per_group": 3,  "bp_period": "max"},
+    "4gun":  {"base_interval": "1d",  "bars_per_group": 4,  "bp_period": "max"},
+    "5gun":  {"base_interval": "1d",  "bars_per_group": 5,  "bp_period": "max"},
     "1hafta": {"base_interval": "1wk", "bars_per_group": 1, "bp_period": "max"},
     "1ay":    {"base_interval": "1mo", "bars_per_group": 1, "bp_period": "max"},
 }
+# NOT: bp_period="max" -> borsapy/TradingView'dan alınabilecek EN FAZLA geçmiş
+# veri istenir. Gün-içi periyotlarda (15dk-13sa) TradingView'ın sağlayabildiği
+# geçmiş zaten sınırlıdır (genelde birkaç hafta/ay); "max" istemek o sınıra
+# kadar ne varsa hepsini getirir, sınırı aşmaya çalışmaz. Günlük ve üzeri
+# periyotlarda ise gerçekten yıllar boyu geriye gidebilir.
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_base_ohlc(symbol: str, base_interval: str, bp_period: str, is_index: bool):
-    obj = bp.Index(symbol) if is_index else bp.Ticker(symbol)
-    data = obj.history(period=bp_period, interval=base_interval)
+    """
+    NOT: 'XU100_CFNNTLTL' gibi 'GETİRİ' (return/total-return) endeksleri,
+    borsapy'nin bp.indices()/bp.all_indices() listesindeki standart 79
+    endeksin İÇİNDE OLMAYABİLİR (bunlar ayrı ISIN'e sahip, temettü dahil
+    edilmiş resmi Borsa İstanbul serileridir). bp.Index(symbol) sınıfı
+    sembolü doğrudan TradingView'a ilettiği için genelde çalışır, ama
+    resmi olarak dokümante edilmemiştir. Çalışmazsa aşağıdaki except bloğu
+    açık bir hata mesajı verir; o durumda TradingViewStream üzerinden
+    ham sembol çekmeye geçmemiz gerekir.
+    """
+    try:
+        obj = bp.Index(symbol) if is_index else bp.Ticker(symbol)
+        data = obj.history(period=bp_period, interval=base_interval)
+    except Exception as e:
+        raise ValueError(
+            f"'{symbol}' için veri çekilemedi ({base_interval}, {bp_period}). "
+            f"Hata: {e}. "
+            f"'{symbol}' borsapy'nin desteklediği bir sembol olmayabilir "
+            f"('GETİRİ' endeksleri için TradingViewStream üzerinden manuel "
+            f"çekim gerekebilir)."
+        )
+
     if data is None or data.empty:
-        raise ValueError(f"'{symbol}' için '{base_interval}' periyodunda veri bulunamadı.")
+        raise ValueError(
+            f"'{symbol}' için '{base_interval}' periyodunda veri bulunamadı "
+            f"(boş sonuç döndü)."
+        )
     return data.rename(columns={"High": "high", "Low": "low", "Close": "close"})[
         ["high", "low", "close"]
     ]
@@ -198,7 +226,14 @@ if not BORSAPY_AVAILABLE:
 
 with st.sidebar:
     st.header("Tarama Ayarları")
-    index_symbol = st.text_input("Endeks", value="XU100")
+    index_symbol = st.text_input(
+        "Endeks (GETİRİ endeksi)",
+        value="XU100_CFNNTLTL",
+        help=(
+            "Orijinal TradingView taramasındaki gibi BIST 100 GETİRİ endeksi "
+            "kullanılır (düz XU100 fiyat endeksi DEĞİL)."
+        ),
+    )
     stock_input = st.text_area(
         "Hisseler (virgülle ayır)",
         value="AYEN, AKBNK, THYAO, GARAN",
@@ -211,7 +246,9 @@ with st.sidebar:
         default=["1gun", "2gun", "3gun", "1hafta", "1ay"],
     )
 
-    lrc_len = st.number_input("LRC Uzunluk (High/Low)", min_value=10, max_value=300, value=300, step=10)
+    # LRC uzunluğu sabit 300/300 (orijinal Pine Script ile birebir aynı)
+    lrc_len = 300
+    st.caption("LRC Uzunluk (High/Low): **300 / 300** (sabit, orijinal ayarla aynı)")
     gerikontrol = st.number_input("Taranacak Bar Sayısı (gerikontrol)", min_value=5, max_value=200, value=31, step=1)
 
     run_scan = st.button("🔍 Taramayı Başlat", type="primary", use_container_width=True)
@@ -244,6 +281,7 @@ if run_scan:
                 matrix.loc[stock, tf] = cell
                 detail_rows.append({
                     "Hisse": stock, "Periyot": tf,
+                    "Toplam Bar (Çekilen Veri)": r["available_bars"],
                     "Son Kesişimden Bu Yana Bar": r["bars_since_cross"],
                     "Sonuç": cell,
                 })
