@@ -109,10 +109,19 @@ def build_ratio_ohlc(stock_df, index_df) -> pd.DataFrame:
 
 
 def group_n_bars(df: pd.DataFrame, n: int) -> pd.DataFrame:
+    """
+    Günlük ve üzeri periyotlar (2gun, 3gun, ...) için: veri setinin BAŞINDAN
+    itibaren art arda N bar birleştirilir. Tamamlanmamış son grup (en güncel,
+    henüz N bara ulaşmamış) ATILIR - bu sayede yeni bar eklendiğinde eski
+    grupların sınırları KAYMAZ (kararlı/stabil sonuç).
+    """
     if n <= 1:
         return df.copy()
     n_full_groups = len(df) // n
-    trimmed = df.iloc[len(df) - n_full_groups * n:]
+    keep = n_full_groups * n
+    trimmed = df.iloc[:keep]  # BAŞTAN tut, fazlalığı SONDAN at (stabil hizalama)
+    if len(trimmed) == 0:
+        return trimmed[["high", "low", "close"]]
     group_id = np.arange(len(trimmed)) // n
     grouped = pd.DataFrame({
         "high": trimmed["high"].groupby(group_id).max().values,
@@ -120,6 +129,33 @@ def group_n_bars(df: pd.DataFrame, n: int) -> pd.DataFrame:
         "close": trimmed["close"].groupby(group_id).last().values,
     }, index=trimmed.index[n - 1::n][:n_full_groups])
     return grouped
+
+
+def group_n_bars_intraday(df: pd.DataFrame, n: int) -> pd.DataFrame:
+    """
+    Gün-içi çoklu-saat periyotları (2sa, 3sa, ... 13sa) için: HER GÜN kendi
+    içinde, o günün İLK barından (seans açılışı) itibaren N'li gruplara
+    ayrılır. TradingView'ın native çoklu-saat mumlarına en yakın hizalama
+    budur ve yeni gün eklendiğinde önceki günlerin grupları ASLA kaymaz.
+    """
+    if n <= 1:
+        return df.copy()
+
+    work = df.copy()
+    work["_date"] = work.index.date
+    work["_bar_no"] = work.groupby("_date").cumcount()
+    work["_block"] = work["_bar_no"] // n
+
+    grouped = work.groupby(["_date", "_block"]).agg(
+        high=("high", "max"),
+        low=("low", "min"),
+        close=("close", "last"),
+    )
+    last_ts = work.groupby(["_date", "_block"]).apply(lambda g: g.index[-1])
+    grouped = grouped.reset_index(drop=True)
+    grouped.index = last_ts.values
+    grouped = grouped.sort_index()
+    return grouped[["high", "low", "close"]]
 
 
 TIMEFRAMES = {
@@ -187,7 +223,12 @@ def fetch_base_ohlc(symbol: str, base_interval: str, bp_period: str, is_index: b
 def get_ohlc_for_timeframe(symbol: str, tf_key: str, is_index: bool = False):
     cfg = TIMEFRAMES[tf_key]
     base_df = fetch_base_ohlc(symbol, cfg["base_interval"], cfg["bp_period"], is_index)
-    return group_n_bars(base_df, cfg["bars_per_group"])
+    n = cfg["bars_per_group"]
+    if cfg["base_interval"] == "1h" and n > 1:
+        # Saatlik taban -> çoklu saat (2sa...13sa): gün-bazlı, seans açılışından
+        # itibaren gruplama (stabil, TradingView hizalamasına en yakın yöntem)
+        return group_n_bars_intraday(base_df, n)
+    return group_n_bars(base_df, n)
 
 
 def scan_pair_on_timeframe(stock_symbol, index_symbol, tf_key,
