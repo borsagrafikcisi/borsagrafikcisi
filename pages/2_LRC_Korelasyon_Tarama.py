@@ -27,6 +27,9 @@ BAĞIMSIZ (TEK BAŞINA) BİR RENDER SERVİSİ OLARAK ÇALIŞTIRMAK İSTERSEN:
    'streamlit_app.py' adıyla koy.)
 """
 
+import concurrent.futures as cf
+import threading
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -303,6 +306,16 @@ with st.sidebar:
     st.caption("LRC Uzunluk (High/Low): **300 / 300** (sabit, orijinal ayarla aynı)")
     gerikontrol = st.number_input("Taranacak Bar Sayısı (gerikontrol)", min_value=5, max_value=200, value=31, step=1)
 
+    max_workers = st.slider(
+        "Eşzamanlı İstek Sayısı (Hız)",
+        min_value=1, max_value=30, value=15,
+        help=(
+            "Yüksek değer taramayı hızlandırır ama çok yüksek olursa "
+            "TradingView tarafında hız sınırlamasına (rate limit) takılıp "
+            "hataların artmasına yol açabilir. 10-20 arası önerilir."
+        ),
+    )
+
     run_scan = st.button("🔍 Taramayı Başlat", type="primary", use_container_width=True)
 
 if run_scan:
@@ -335,40 +348,62 @@ if run_scan:
         st.warning("En az bir periyot seçmelisin.")
         st.stop()
 
-    progress = st.progress(0.0, text="Taranıyor...")
-    total = len(stock_symbols) * len(selected_timeframes)
+    def _scan_one(stock, tf):
+        try:
+            r = scan_pair_on_timeframe(stock, index_symbol, tf,
+                                        lrc_len_high=lrc_len, lrc_len_low=lrc_len,
+                                        gerikontrol=gerikontrol)
+            return stock, tf, r, None
+        except Exception as e:
+            return stock, tf, None, str(e)
+
+    tasks = [(s, tf) for s in stock_symbols for tf in selected_timeframes]
+    total = len(tasks)
     done = 0
 
     kesisim_bulunanlar = []
-    basarisiz_semboller = []  # (sembol, periyot, hata mesajı)
+    basarisiz_semboller = []
     yetersiz_veri_sayisi = 0
 
-    for stock in stock_symbols:
-        for tf in selected_timeframes:
-            try:
-                r = scan_pair_on_timeframe(stock, index_symbol, tf,
-                                            lrc_len_high=lrc_len, lrc_len_low=lrc_len,
-                                            gerikontrol=gerikontrol)
-                if r["not_enough_data"]:
-                    yetersiz_veri_sayisi += 1
-                elif r["condition"]:
-                    kesisim_bulunanlar.append({
-                        "Hisse": stock,
-                        "Periyot": tf,
-                        "Son Kesişimden Bu Yana Bar": int(r["bars_since_cross"]),
-                        "Toplam Bar (Çekilen Veri)": r["available_bars"],
-                    })
-            except Exception as e:
-                basarisiz_semboller.append((stock, tf, str(e)))
+    progress = st.progress(0.0, text="Taranıyor...")
+
+    with cf.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_scan_one, s, tf) for s, tf in tasks]
+        for future in cf.as_completed(futures):
+            stock, tf, r, err = future.result()
+            if err is not None:
+                basarisiz_semboller.append((stock, tf, err))
+            elif r["not_enough_data"]:
+                yetersiz_veri_sayisi += 1
+            elif r["condition"]:
+                kesisim_bulunanlar.append({
+                    "Hisse": stock,
+                    "Periyot": tf,
+                    "Son Kesişimden Bu Yana Bar": int(r["bars_since_cross"]),
+                    "Toplam Bar (Çekilen Veri)": r["available_bars"],
+                })
             done += 1
             if done % 5 == 0 or done == total:
                 progress.progress(done / total, text=f"Taranıyor... ({done}/{total})")
 
     progress.empty()
 
-    st.subheader(f"🎯 Kesişim Bulunan Sonuçlar ({index_symbol})")
-    if kesisim_bulunanlar:
-        sonuc_df = pd.DataFrame(kesisim_bulunanlar).sort_values(
+    # Sonucu hafızaya (session_state) kaydet - sayfadan çıkıp geri dönünce kaybolmasın
+    st.session_state["lrc_last_results"] = {
+        "index_symbol": index_symbol,
+        "kesisim_bulunanlar": kesisim_bulunanlar,
+        "basarisiz_semboller": basarisiz_semboller,
+        "yetersiz_veri_sayisi": yetersiz_veri_sayisi,
+        "total": total,
+    }
+
+# --- SONUÇLARI GÖSTER (session_state'ten - hem yeni tarama hem sayfaya geri dönüşte) ---
+results = st.session_state.get("lrc_last_results")
+
+if results:
+    st.subheader(f"🎯 Kesişim Bulunan Sonuçlar ({results['index_symbol']})")
+    if results["kesisim_bulunanlar"]:
+        sonuc_df = pd.DataFrame(results["kesisim_bulunanlar"]).sort_values(
             ["Periyot", "Son Kesişimden Bu Yana Bar"]
         )
         st.dataframe(sonuc_df, use_container_width=True, hide_index=True)
@@ -376,8 +411,11 @@ if run_scan:
     else:
         st.info("Seçilen kriterlerde kesişim sinyali bulunamadı.")
 
-    # --- TANI (DEBUG) BİLGİSİ: kaçı başarılı, kaçı hatalı, kaçı yetersiz veri ---
+    basarisiz_semboller = results["basarisiz_semboller"]
+    yetersiz_veri_sayisi = results["yetersiz_veri_sayisi"]
+    total = results["total"]
     basarili = total - len(basarisiz_semboller) - yetersiz_veri_sayisi
+
     st.divider()
     st.caption(
         f"Toplam denenen: {total} | Başarılı: {basarili} | "
