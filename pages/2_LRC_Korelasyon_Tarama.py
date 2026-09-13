@@ -273,7 +273,19 @@ if run_scan:
             except Exception as e:
                 st.error(f"Tüm hisse listesi çekilemedi: {e}")
                 st.stop()
-        st.caption(f"Taranacak toplam hisse sayısı: {len(stock_symbols)}")
+
+        st.write(f"**Çekilen toplam hisse sayısı:** {len(stock_symbols)}")
+        with st.expander("Çekilen hisse listesini gör"):
+            st.write(stock_symbols)
+
+        if len(stock_symbols) < 50:
+            st.warning(
+                "BIST'te normalde 500+ hisse var; 'XUTUM' beklenenden az sembol "
+                "döndürdü. Muhtemelen borsapy'de bu endeks için bileşen listesi "
+                "sorunlu ya da farklı bir property adı gerekiyor. Aşağıda "
+                "'Manuel Liste Gir' seçeneğini kullanabilir ya da hatayı bana "
+                "iletebilirsin."
+            )
 
     if not stock_symbols:
         st.warning("Taranacak hisse bulunamadı.")
@@ -287,6 +299,8 @@ if run_scan:
     done = 0
 
     kesisim_bulunanlar = []
+    basarisiz_semboller = []  # (sembol, periyot, hata mesajı)
+    yetersiz_veri_sayisi = 0
 
     for stock in stock_symbols:
         for tf in selected_timeframes:
@@ -294,15 +308,17 @@ if run_scan:
                 r = scan_pair_on_timeframe(stock, index_symbol, tf,
                                             lrc_len_high=lrc_len, lrc_len_low=lrc_len,
                                             gerikontrol=gerikontrol)
-                if (not r["not_enough_data"]) and r["condition"]:
+                if r["not_enough_data"]:
+                    yetersiz_veri_sayisi += 1
+                elif r["condition"]:
                     kesisim_bulunanlar.append({
                         "Hisse": stock,
                         "Periyot": tf,
                         "Son Kesişimden Bu Yana Bar": int(r["bars_since_cross"]),
                         "Toplam Bar (Çekilen Veri)": r["available_bars"],
                     })
-            except Exception:
-                pass  # Veri çekilemeyen / hatalı sembolleri sessizce atla
+            except Exception as e:
+                basarisiz_semboller.append((stock, tf, str(e)))
             done += 1
             if done % 5 == 0 or done == total:
                 progress.progress(done / total, text=f"Taranıyor... ({done}/{total})")
@@ -318,5 +334,17 @@ if run_scan:
         st.success(f"Toplam {len(sonuc_df)} adet kesişim sinyali bulundu.")
     else:
         st.info("Seçilen kriterlerde kesişim sinyali bulunamadı.")
+
+    # --- TANI (DEBUG) BİLGİSİ: kaçı başarılı, kaçı hatalı, kaçı yetersiz veri ---
+    basarili = total - len(basarisiz_semboller) - yetersiz_veri_sayisi
+    st.divider()
+    st.caption(
+        f"Toplam denenen: {total} | Başarılı: {basarili} | "
+        f"Yetersiz veri: {yetersiz_veri_sayisi} | Hatalı: {len(basarisiz_semboller)}"
+    )
+    if basarisiz_semboller:
+        with st.expander(f"⚠️ Hatalı/çekilemeyen {len(basarisiz_semboller)} sorgu (tıkla, gör)"):
+            hata_df = pd.DataFrame(basarisiz_semboller, columns=["Hisse", "Periyot", "Hata Mesajı"])
+            st.dataframe(hata_df, use_container_width=True, hide_index=True)
 else:
     st.info("Soldaki ayarları yapıp 'Taramayı Başlat' butonuna bas.")
