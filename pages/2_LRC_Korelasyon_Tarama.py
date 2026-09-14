@@ -10,6 +10,7 @@ requirements.txt: streamlit, borsapy, pandas, numpy
 """
 
 import concurrent.futures as cf
+import gc
 
 import numpy as np
 import pandas as pd
@@ -226,8 +227,18 @@ with st.sidebar:
 
     max_workers = st.slider(
         "Eşzamanlı İstek Sayısı (Hız)",
-        min_value=5, max_value=40, value=25,
-        help="Yüksek değer hızlandırır ama çok yüksek olursa hata oranı artabilir. 20-30 önerilir.",
+        min_value=5, max_value=40, value=15,
+        help="Yüksek değer hızlandırır ama hem hata oranını hem bellek kullanımını artırabilir. 10-20 önerilir.",
+    )
+
+    chunk_size = st.slider(
+        "Grup Boyutu (Bellek Güvenliği)",
+        min_value=20, max_value=200, value=80, step=20,
+        help=(
+            "Hisseler bu boyutta gruplar halinde işlenir, her grup sonrası "
+            "bellek temizlenir. Küçük değer = daha güvenli ama biraz daha "
+            "yavaş; büyük değer = daha hızlı ama bellek taşma riski artar."
+        ),
     )
 
     run_scan = st.button("🔍 Taramayı Başlat", type="primary", use_container_width=True)
@@ -278,42 +289,51 @@ if run_scan:
                 done += 1
             continue
 
-        # Hisseler PARALEL taranır
-        with cf.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(scan_one_stock, stock, index_ohlc, tf, lrc_len, gerikontrol): stock
-                for stock in stock_symbols
-            }
-            for future in cf.as_completed(futures):
-                stock = futures[future]
-                try:
-                    r = future.result()
-                    if r["not_enough_data"]:
-                        yetersiz_veri_sayisi += 1
-                    elif r["condition"]:
-                        kesisim_bulunanlar.append({
-                            "Hisse": stock,
-                            "Periyot": tf,
-                            "Son Kesişimden Bu Yana Bar": int(r["bars_since_cross"]),
-                            "Toplam Bar (Çekilen Veri)": r["available_bars"],
-                        })
-                except Exception as e:
-                    basarisiz_semboller.append((stock, tf, str(e)))
+        # Hisseler GRUPLAR (chunk) halinde, her grup içinde PARALEL taranır.
+        # Her grup bitince bellek temizlenir (gc.collect) - bu, uzun taramalarda
+        # RAM'in kademeli artıp Render'ın bellek limitini aşmasını önler.
+        for chunk_start in range(0, len(stock_symbols), chunk_size):
+            chunk = stock_symbols[chunk_start: chunk_start + chunk_size]
 
-                done += 1
-                if done % 3 == 0 or done == total:
-                    elapsed = _time.time() - t0
-                    hiz = done / elapsed if elapsed > 0 else 0
-                    kalan_sn = (total - done) / hiz if hiz > 0 else 0
-                    progress_bar.progress(done / total)
-                    progress_text.text(
-                        f"Taranıyor... {done}/{total} | "
-                        f"Geçen süre: {elapsed:.0f}sn | Tahmini kalan: {kalan_sn:.0f}sn"
-                    )
-                    if kesisim_bulunanlar:
-                        with sonuc_placeholder.container():
-                            st.write(f"🎯 **Şimdiye kadar bulunan kesişim: {len(kesisim_bulunanlar)}**")
-                            st.dataframe(pd.DataFrame(kesisim_bulunanlar), use_container_width=True, hide_index=True)
+            with cf.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(scan_one_stock, stock, index_ohlc, tf, lrc_len, gerikontrol): stock
+                    for stock in chunk
+                }
+                for future in cf.as_completed(futures):
+                    stock = futures[future]
+                    try:
+                        r = future.result()
+                        if r["not_enough_data"]:
+                            yetersiz_veri_sayisi += 1
+                        elif r["condition"]:
+                            kesisim_bulunanlar.append({
+                                "Hisse": stock,
+                                "Periyot": tf,
+                                "Son Kesişimden Bu Yana Bar": int(r["bars_since_cross"]),
+                                "Toplam Bar (Çekilen Veri)": r["available_bars"],
+                            })
+                    except Exception as e:
+                        basarisiz_semboller.append((stock, tf, str(e)))
+
+                    done += 1
+                    if done % 3 == 0 or done == total:
+                        elapsed = _time.time() - t0
+                        hiz = done / elapsed if elapsed > 0 else 0
+                        kalan_sn = (total - done) / hiz if hiz > 0 else 0
+                        progress_bar.progress(done / total)
+                        progress_text.text(
+                            f"Taranıyor... {done}/{total} | "
+                            f"Geçen süre: {elapsed:.0f}sn | Tahmini kalan: {kalan_sn:.0f}sn"
+                        )
+                        if kesisim_bulunanlar:
+                            with sonuc_placeholder.container():
+                                st.write(f"🎯 **Şimdiye kadar bulunan kesişim: {len(kesisim_bulunanlar)}**")
+                                st.dataframe(pd.DataFrame(kesisim_bulunanlar), use_container_width=True, hide_index=True)
+
+            # Grup (chunk) bitti - belleği temizle
+            del futures
+            gc.collect()
 
     progress_bar.empty()
     progress_text.empty()
