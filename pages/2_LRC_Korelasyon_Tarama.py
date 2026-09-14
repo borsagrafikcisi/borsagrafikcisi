@@ -1,26 +1,15 @@
 """
-LRC Korelasyon Tarama - Streamlit Web Sayfası (Arka Plan + Toplu Veri Çekme)
-================================================================================
-Bu sürümde iki büyük mimari değişiklik var:
-
-1) ARKA PLAN TARAMA: Tarama artık gerçek bir arka plan thread'inde (iş
-   parçacığında) çalışıyor. Sayfadan çıkıp geri dönsen bile tarama SUNUCU
-   TARAFINDA devam eder, çünkü tarayıcı bağlantısına bağlı değildir.
-   st.cache_resource ile process ömrü boyunca kalıcı, paylaşılan bir durum
-   (scan_state) nesnesi tutulur.
-
-2) TOPLU (BULK) VERİ ÇEKME: Her hisse için ayrı ayrı ağ isteği atmak yerine,
-   bp.download() ile TÜM hisseler TEK/birkaç istekte çekilir. Ardından LRC
-   hesaplaması tamamen yerel (ağ gerektirmeyen) pandas işlemleriyle yapılır,
-   bu da süreci saniyeler/dakikalar seviyesine indirir.
+LRC Korelasyon Tarama - Streamlit Web Sayfası (Senkron + Gerçek Paralel Tarama)
+==================================================================================
+Bu sürüm SADE tutuldu: arka plan thread / session_state kalıcılık mimarisi
+kaldırıldı. Tarama, sayfa açıkken CANLI ilerleme göstererek çalışır (senkron).
+Hız için: her hisseye AYNI ANDA (ThreadPoolExecutor ile paralel) istek atılır.
 
 KURULUM: Bu dosyayı 'pages/2_LRC_Korelasyon_Tarama.py' olarak kaydet.
 requirements.txt: streamlit, borsapy, pandas, numpy
 """
 
-import gc
-import threading
-import time
+import concurrent.futures as cf
 
 import numpy as np
 import pandas as pd
@@ -54,11 +43,6 @@ def linreg(series: pd.Series, length: int) -> pd.Series:
     return result
 
 
-def ta_dev(series: pd.Series, length: int) -> pd.Series:
-    sma = series.rolling(length).mean()
-    return (series - sma).abs().rolling(length).mean()
-
-
 def cross_series(a: pd.Series, b: pd.Series) -> pd.Series:
     diff = a - b
     prev_diff = diff.shift(1)
@@ -80,15 +64,12 @@ def barssince(cond: pd.Series) -> pd.Series:
     return result
 
 
-def compute_lrc(high, low, lrc_len_high=300, lrc_len_low=300) -> pd.DataFrame:
-    lrc_high_reg = linreg(high, lrc_len_high)
-    lrc_low_reg = linreg(low, lrc_len_low)
+def compute_lrc_cross(high, low, lrc_len=300):
+    lrc_high_reg = linreg(high, lrc_len)
+    lrc_low_reg = linreg(low, lrc_len)
     cross_flag = cross_series(lrc_high_reg, lrc_low_reg)
     bars_since = barssince(cross_flag)
-    return pd.DataFrame({
-        "lrc_high_reg": lrc_high_reg, "lrc_low_reg": lrc_low_reg,
-        "cross_flag": cross_flag, "bars_since_cross": bars_since,
-    })
+    return bars_since
 
 
 def build_ratio_ohlc(stock_df, index_df) -> pd.DataFrame:
@@ -138,11 +119,9 @@ def group_n_bars_intraday(df: pd.DataFrame, n: int) -> pd.DataFrame:
 
 
 TIMEFRAMES = {
-    # NOT: 'max' yerine sınırlı ama 300 barlık LRC için fazlasıyla yeterli
-    # periyotlar kullanılıyor - bellek (RAM) taşmasını önlemek için. Bazı BIST
-    # hisseleri 30-40 yıllık geçmişe sahip; 583 hissenin TÜMÜNÜN tüm tarihini
-    # aynı anda belleğe yüklemek Render'ın bellek limitini aşırıyordu.
-    "15dk":  {"base_interval": "15m", "bars_per_group": 1,  "bp_period": "max"},   # zaten sağlayıcı sınırlı veriyor
+    # Kısa ama 300 barlık LRC için yeterli geçmiş periyotlar - hem hız hem
+    # bellek için 'max' yerine sınırlı aralıklar kullanılıyor.
+    "15dk":  {"base_interval": "15m", "bars_per_group": 1,  "bp_period": "max"},
     "30dk":  {"base_interval": "30m", "bars_per_group": 1,  "bp_period": "max"},
     "45dk":  {"base_interval": "45m", "bars_per_group": 1,  "bp_period": "max"},
     "1sa":   {"base_interval": "1h",  "bars_per_group": 1,  "bp_period": "2y"},
@@ -159,19 +138,12 @@ TIMEFRAMES = {
     "3gun":  {"base_interval": "1d",  "bars_per_group": 3,  "bp_period": "5y"},
     "4gun":  {"base_interval": "1d",  "bars_per_group": 4,  "bp_period": "6y"},
     "5gun":  {"base_interval": "1d",  "bars_per_group": 5,  "bp_period": "7y"},
-    "1hafta": {"base_interval": "1wk", "bars_per_group": 1, "bp_period": "max"},  # haftalık veri hafif, sorun değil
-    "1ay":    {"base_interval": "1mo", "bars_per_group": 1, "bp_period": "max"},  # aylık veri hafif, sorun değil
+    "1hafta": {"base_interval": "1wk", "bars_per_group": 1, "bp_period": "max"},
+    "1ay":    {"base_interval": "1mo", "bars_per_group": 1, "bp_period": "max"},
 }
-
-# Her seferde en fazla bu kadar hisse için TOPLU veri çekilir; büyük listeler
-# bu boyutta parçalara (batch) bölünür. Küçük tutmak bellek kullanımını
-# sınırlar ve ilerlemeyi (progress) düzenli aralıklarla güncelleyebilmeyi sağlar.
-BATCH_SIZE = 40
 
 
 def fetch_single_ohlc(symbol: str, base_interval: str, bp_period: str, is_index: bool) -> pd.DataFrame:
-    """Tek sembol (endeks için kullanılır) - küçük/az sayıda çağrı olduğu için
-    toplu çekime gerek yok."""
     obj = bp.Index(symbol) if is_index else bp.Ticker(symbol)
     data = obj.history(period=bp_period, interval=base_interval)
     if data is None or data.empty:
@@ -181,39 +153,7 @@ def fetch_single_ohlc(symbol: str, base_interval: str, bp_period: str, is_index:
     ]
 
 
-def fetch_bulk_ohlc(symbols: list, base_interval: str, bp_period: str) -> dict:
-    """
-    TÜM hisseleri TEK/birkaç istekte çeker (borsapy'nin bp.download() toplu
-    fonksiyonu ile). Dönen sözlük: {sembol: DataFrame(high, low, close)}.
-    Bulk çekim herhangi bir sebeple başarısız olursa (örn. borsapy sürümü
-    'interval' param'ını desteklemiyorsa), sembol sembol (yavaş ama çalışan)
-    yönteme otomatik geri döner.
-    """
-    result = {}
-    try:
-        bulk = bp.download(symbols, period=bp_period, interval=base_interval, group_by="ticker")
-        for sym in symbols:
-            try:
-                sub = bulk[sym]
-                sub = sub.rename(columns={"High": "high", "Low": "low", "Close": "close"})
-                sub = sub[["high", "low", "close"]].dropna(how="all")
-                if not sub.empty:
-                    result[sym] = sub
-            except Exception:
-                continue
-        return result
-    except Exception:
-        # Toplu çekim desteklenmiyor/başarısız oldu -> tek tek dene (yavaş yol)
-        for sym in symbols:
-            try:
-                result[sym] = fetch_single_ohlc(sym, base_interval, bp_period, is_index=False)
-            except Exception:
-                continue
-        return result
-
-
-def get_ratio_series_for_timeframe(stock_ohlc: pd.DataFrame, index_ohlc: pd.DataFrame,
-                                    tf_key: str) -> pd.DataFrame:
+def get_ratio_series(stock_ohlc: pd.DataFrame, index_ohlc: pd.DataFrame, tf_key: str) -> pd.DataFrame:
     cfg = TIMEFRAMES[tf_key]
     n = cfg["bars_per_group"]
     if cfg["base_interval"] == "1h" and n > 1:
@@ -225,109 +165,26 @@ def get_ratio_series_for_timeframe(stock_ohlc: pd.DataFrame, index_ohlc: pd.Data
     return build_ratio_ohlc(stock_grp, index_grp)
 
 
-# ==================== ARKA PLAN TARAMA DURUMU (process ömrü boyunca kalıcı) ====================
+def scan_one_stock(stock: str, index_ohlc: pd.DataFrame, tf: str, lrc_len: int, gerikontrol: int):
+    """Tek hisse için: veri çek + oran hesapla + LRC kesişimini kontrol et."""
+    cfg = TIMEFRAMES[tf]
+    stock_ohlc = fetch_single_ohlc(stock, cfg["base_interval"], cfg["bp_period"], is_index=False)
+    ratio = get_ratio_series(stock_ohlc, index_ohlc, tf)
+    n_bars = len(ratio)
 
-@st.cache_resource
-def get_scan_state():
+    if n_bars < lrc_len:
+        return {"not_enough_data": True, "available_bars": n_bars}
+
+    bars_since = compute_lrc_cross(ratio["high"], ratio["low"], lrc_len)
+    last_bars_since = bars_since.iloc[-1] if len(bars_since) else np.nan
+    condition = (not np.isnan(last_bars_since)) and (last_bars_since < gerikontrol)
+
     return {
-        "running": False,
-        "done": 0,
-        "total": 0,
-        "results": None,       # {"kesisim_bulunanlar":..., "basarisiz":..., "yetersiz":..., "total":...}
-        "log": [],
-        "lock": threading.Lock(),
+        "not_enough_data": False,
+        "available_bars": n_bars,
+        "bars_since_cross": last_bars_since,
+        "condition": condition,
     }
-
-
-def _run_scan_worker(stock_symbols, selected_timeframes, index_symbol,
-                      lrc_len, gerikontrol, state):
-    try:
-        kesisim_bulunanlar = []
-        yetersiz_veri_sayisi = 0
-        basarisiz_semboller = []
-        done = 0
-
-        for tf in selected_timeframes:
-            cfg = TIMEFRAMES[tf]
-
-            # Endeks verisi (tek sembol, hafif)
-            try:
-                index_ohlc = fetch_single_ohlc(index_symbol, cfg["base_interval"], cfg["bp_period"], is_index=True)
-            except Exception as e:
-                for s in stock_symbols:
-                    basarisiz_semboller.append((s, tf, f"Endeks verisi çekilemedi: {e}"))
-                    done += 1
-                with state["lock"]:
-                    state["done"] = done
-                continue
-
-            # Hisseler KÜÇÜK GRUPLAR (batch) halinde çekiliyor - bellek taşmasını
-            # önlemek için tüm piyasayı tek seferde belleğe yüklemiyoruz.
-            for batch_start in range(0, len(stock_symbols), BATCH_SIZE):
-                batch = stock_symbols[batch_start: batch_start + BATCH_SIZE]
-
-                try:
-                    bulk_data = fetch_bulk_ohlc(batch, cfg["base_interval"], cfg["bp_period"])
-                except Exception as e:
-                    for s in batch:
-                        basarisiz_semboller.append((s, tf, f"Toplu çekim hatası: {e}"))
-                        done += 1
-                    with state["lock"]:
-                        state["done"] = done
-                    continue
-
-                for stock in batch:
-                    try:
-                        stock_ohlc = bulk_data.get(stock)
-                        if stock_ohlc is None or stock_ohlc.empty:
-                            raise ValueError("Toplu çekimde veri bulunamadı.")
-
-                        ratio = get_ratio_series_for_timeframe(stock_ohlc, index_ohlc, tf)
-                        n_bars = len(ratio)
-
-                        if n_bars < lrc_len:
-                            yetersiz_veri_sayisi += 1
-                        else:
-                            lrc = compute_lrc(ratio["high"], ratio["low"], lrc_len, lrc_len)
-                            last_bars_since = lrc["bars_since_cross"].iloc[-1] if len(lrc) else np.nan
-                            if (not np.isnan(last_bars_since)) and (last_bars_since < gerikontrol):
-                                kesisim_bulunanlar.append({
-                                    "Hisse": stock,
-                                    "Periyot": tf,
-                                    "Son Kesişimden Bu Yana Bar": int(last_bars_since),
-                                    "Toplam Bar (Çekilen Veri)": n_bars,
-                                })
-                    except Exception as e:
-                        basarisiz_semboller.append((stock, tf, str(e)))
-
-                    done += 1
-
-                with state["lock"]:
-                    state["done"] = done
-
-                # Batch'ten kalan büyük veri yapılarını serbest bırak (RAM'i düşür)
-                del bulk_data
-                gc.collect()
-
-        with state["lock"]:
-            state["results"] = {
-                "index_symbol": index_symbol,
-                "kesisim_bulunanlar": kesisim_bulunanlar,
-                "basarisiz_semboller": basarisiz_semboller,
-                "yetersiz_veri_sayisi": yetersiz_veri_sayisi,
-                "total": state["total"],
-            }
-            state["running"] = False
-    except Exception as e:
-        with state["lock"]:
-            state["results"] = {
-                "index_symbol": index_symbol,
-                "kesisim_bulunanlar": [],
-                "basarisiz_semboller": [("GENEL_HATA", "-", str(e))],
-                "yetersiz_veri_sayisi": 0,
-                "total": state["total"],
-            }
-            state["running"] = False
 
 
 # ==================== STREAMLIT ARAYÜZÜ ====================
@@ -337,21 +194,16 @@ st.title("📈 LRC Korelasyon Tarama (Orta Üst / Orta Alt Bant Kesişimi)")
 st.caption(
     "Veri kaynağı: borsapy (TradingView WebSocket, ~15 dk gecikmeli). "
     "HİSSE/ENDEKS oranı üzerinde LRC orta üst - orta alt bant kesişimi taranır. "
-    "Tarama arka planda çalışır; sayfadan çıkıp geri dönsen bile devam eder."
+    "Tarama sayfa açıkken çalışır ve canlı ilerleme gösterir."
 )
 
 if not BORSAPY_AVAILABLE:
     st.error("`borsapy` kurulu değil. `requirements.txt` dosyana `borsapy` ekle.")
     st.stop()
 
-scan_state = get_scan_state()
-
 with st.sidebar:
     st.header("Tarama Ayarları")
-    index_symbol = st.text_input(
-        "Endeks (GETİRİ endeksi - oranın paydası)",
-        value="XU100_CFNNTLTL",
-    )
+    index_symbol = st.text_input("Endeks (GETİRİ endeksi - oranın paydası)", value="XU100_CFNNTLTL")
 
     tarama_kapsami = st.radio(
         "Taranacak Hisseler",
@@ -366,21 +218,21 @@ with st.sidebar:
         stock_symbols_input = None
         st.caption("Tüm BIST'te işlem gören hisseler taranacak (XUTUM bileşenleri).")
 
-    selected_timeframes = st.multiselect(
-        "Periyotlar", options=list(TIMEFRAMES.keys()), default=["1gun"],
-    )
+    selected_timeframes = st.multiselect("Periyotlar", options=list(TIMEFRAMES.keys()), default=["1gun"])
 
     lrc_len = 300
     st.caption("LRC Uzunluk (High/Low): **300 / 300** (sabit)")
     gerikontrol = st.number_input("Taranacak Bar Sayısı (gerikontrol)", min_value=5, max_value=200, value=31, step=1)
 
-    disabled = scan_state["running"]
-    run_scan = st.button(
-        "🔍 Taramayı Başlat" if not disabled else "⏳ Tarama Sürüyor...",
-        type="primary", use_container_width=True, disabled=disabled,
+    max_workers = st.slider(
+        "Eşzamanlı İstek Sayısı (Hız)",
+        min_value=5, max_value=40, value=25,
+        help="Yüksek değer hızlandırır ama çok yüksek olursa hata oranı artabilir. 20-30 önerilir.",
     )
 
-if run_scan and not scan_state["running"]:
+    run_scan = st.button("🔍 Taramayı Başlat", type="primary", use_container_width=True)
+
+if run_scan:
     stock_symbols = stock_symbols_input
     if stock_symbols is None:
         with st.spinner("BIST TÜM (XUTUM) hisse listesi çekiliyor..."):
@@ -390,53 +242,95 @@ if run_scan and not scan_state["running"]:
             except Exception as e:
                 st.error(f"Tüm hisse listesi çekilemedi: {e}")
                 st.stop()
+        st.write(f"**Çekilen toplam hisse sayısı:** {len(stock_symbols)}")
 
     if not stock_symbols:
         st.warning("Taranacak hisse bulunamadı.")
-    elif not selected_timeframes:
+        st.stop()
+    if not selected_timeframes:
         st.warning("En az bir periyot seçmelisin.")
-    else:
-        total = len(stock_symbols) * len(selected_timeframes)
-        with scan_state["lock"]:
-            scan_state["running"] = True
-            scan_state["done"] = 0
-            scan_state["total"] = total
-            scan_state["results"] = None
+        st.stop()
 
-        thread = threading.Thread(
-            target=_run_scan_worker,
-            args=(stock_symbols, selected_timeframes, index_symbol, lrc_len, gerikontrol, scan_state),
-            daemon=True,
-        )
-        thread.start()
-        st.rerun()
+    kesisim_bulunanlar = []
+    basarisiz_semboller = []
+    yetersiz_veri_sayisi = 0
 
-# --- DURUM GÖSTERİMİ ---
-if scan_state["running"]:
-    done = scan_state["done"]
-    total = scan_state["total"] or 1
-    st.progress(done / total, text=f"Taranıyor (arka planda)... {done}/{total}")
-    st.caption("Bu sayfadan çıkıp geri dönebilirsin, tarama sunucu tarafında devam eder.")
-    time.sleep(2)
-    st.rerun()
+    total = len(stock_symbols) * len(selected_timeframes)
+    done = 0
 
-elif scan_state["results"] is not None:
-    results = scan_state["results"]
-    st.subheader(f"🎯 Kesişim Bulunan Sonuçlar ({results['index_symbol']})")
-    if results["kesisim_bulunanlar"]:
-        sonuc_df = pd.DataFrame(results["kesisim_bulunanlar"]).sort_values(
-            ["Periyot", "Son Kesişimden Bu Yana Bar"]
-        )
+    progress_bar = st.progress(0.0)
+    progress_text = st.empty()
+    sonuc_placeholder = st.empty()
+
+    import time as _time
+    t0 = _time.time()
+
+    for tf in selected_timeframes:
+        cfg = TIMEFRAMES[tf]
+
+        # Endeks verisi TEK sefer çekilir (tüm hisseler için ortak kullanılır)
+        try:
+            index_ohlc = fetch_single_ohlc(index_symbol, cfg["base_interval"], cfg["bp_period"], is_index=True)
+        except Exception as e:
+            st.error(f"Endeks verisi çekilemedi ({tf}): {e}")
+            for s in stock_symbols:
+                basarisiz_semboller.append((s, tf, "Endeks verisi çekilemedi"))
+                done += 1
+            continue
+
+        # Hisseler PARALEL taranır
+        with cf.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(scan_one_stock, stock, index_ohlc, tf, lrc_len, gerikontrol): stock
+                for stock in stock_symbols
+            }
+            for future in cf.as_completed(futures):
+                stock = futures[future]
+                try:
+                    r = future.result()
+                    if r["not_enough_data"]:
+                        yetersiz_veri_sayisi += 1
+                    elif r["condition"]:
+                        kesisim_bulunanlar.append({
+                            "Hisse": stock,
+                            "Periyot": tf,
+                            "Son Kesişimden Bu Yana Bar": int(r["bars_since_cross"]),
+                            "Toplam Bar (Çekilen Veri)": r["available_bars"],
+                        })
+                except Exception as e:
+                    basarisiz_semboller.append((stock, tf, str(e)))
+
+                done += 1
+                if done % 3 == 0 or done == total:
+                    elapsed = _time.time() - t0
+                    hiz = done / elapsed if elapsed > 0 else 0
+                    kalan_sn = (total - done) / hiz if hiz > 0 else 0
+                    progress_bar.progress(done / total)
+                    progress_text.text(
+                        f"Taranıyor... {done}/{total} | "
+                        f"Geçen süre: {elapsed:.0f}sn | Tahmini kalan: {kalan_sn:.0f}sn"
+                    )
+                    if kesisim_bulunanlar:
+                        with sonuc_placeholder.container():
+                            st.write(f"🎯 **Şimdiye kadar bulunan kesişim: {len(kesisim_bulunanlar)}**")
+                            st.dataframe(pd.DataFrame(kesisim_bulunanlar), use_container_width=True, hide_index=True)
+
+    progress_bar.empty()
+    progress_text.empty()
+    sonuc_placeholder.empty()
+
+    toplam_sure = _time.time() - t0
+    st.caption(f"Toplam tarama süresi: {toplam_sure:.0f} saniye ({toplam_sure/60:.1f} dakika)")
+
+    st.subheader(f"🎯 Kesişim Bulunan Sonuçlar ({index_symbol})")
+    if kesisim_bulunanlar:
+        sonuc_df = pd.DataFrame(kesisim_bulunanlar).sort_values(["Periyot", "Son Kesişimden Bu Yana Bar"])
         st.dataframe(sonuc_df, use_container_width=True, hide_index=True)
         st.success(f"Toplam {len(sonuc_df)} adet kesişim sinyali bulundu.")
     else:
         st.info("Seçilen kriterlerde kesişim sinyali bulunamadı.")
 
-    basarisiz_semboller = results["basarisiz_semboller"]
-    yetersiz_veri_sayisi = results["yetersiz_veri_sayisi"]
-    total = results["total"]
     basarili = total - len(basarisiz_semboller) - yetersiz_veri_sayisi
-
     st.divider()
     st.caption(
         f"Toplam denenen: {total} | Başarılı: {basarili} | "
