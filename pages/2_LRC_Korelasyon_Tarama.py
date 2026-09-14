@@ -18,6 +18,7 @@ KURULUM: Bu dosyayı 'pages/2_LRC_Korelasyon_Tarama.py' olarak kaydet.
 requirements.txt: streamlit, borsapy, pandas, numpy
 """
 
+import gc
 import threading
 import time
 
@@ -137,26 +138,35 @@ def group_n_bars_intraday(df: pd.DataFrame, n: int) -> pd.DataFrame:
 
 
 TIMEFRAMES = {
-    "15dk":  {"base_interval": "15m", "bars_per_group": 1,  "bp_period": "max"},
+    # NOT: 'max' yerine sınırlı ama 300 barlık LRC için fazlasıyla yeterli
+    # periyotlar kullanılıyor - bellek (RAM) taşmasını önlemek için. Bazı BIST
+    # hisseleri 30-40 yıllık geçmişe sahip; 583 hissenin TÜMÜNÜN tüm tarihini
+    # aynı anda belleğe yüklemek Render'ın bellek limitini aşırıyordu.
+    "15dk":  {"base_interval": "15m", "bars_per_group": 1,  "bp_period": "max"},   # zaten sağlayıcı sınırlı veriyor
     "30dk":  {"base_interval": "30m", "bars_per_group": 1,  "bp_period": "max"},
     "45dk":  {"base_interval": "45m", "bars_per_group": 1,  "bp_period": "max"},
-    "1sa":   {"base_interval": "1h",  "bars_per_group": 1,  "bp_period": "max"},
-    "2sa":   {"base_interval": "1h",  "bars_per_group": 2,  "bp_period": "max"},
-    "3sa":   {"base_interval": "1h",  "bars_per_group": 3,  "bp_period": "max"},
-    "4sa":   {"base_interval": "1h",  "bars_per_group": 4,  "bp_period": "max"},
-    "5sa":   {"base_interval": "1h",  "bars_per_group": 5,  "bp_period": "max"},
-    "6sa":   {"base_interval": "1h",  "bars_per_group": 6,  "bp_period": "max"},
-    "8sa":   {"base_interval": "1h",  "bars_per_group": 8,  "bp_period": "max"},
-    "12sa":  {"base_interval": "1h",  "bars_per_group": 12, "bp_period": "max"},
-    "13sa":  {"base_interval": "1h",  "bars_per_group": 13, "bp_period": "max"},
-    "1gun":  {"base_interval": "1d",  "bars_per_group": 1,  "bp_period": "max"},
-    "2gun":  {"base_interval": "1d",  "bars_per_group": 2,  "bp_period": "max"},
-    "3gun":  {"base_interval": "1d",  "bars_per_group": 3,  "bp_period": "max"},
-    "4gun":  {"base_interval": "1d",  "bars_per_group": 4,  "bp_period": "max"},
-    "5gun":  {"base_interval": "1d",  "bars_per_group": 5,  "bp_period": "max"},
-    "1hafta": {"base_interval": "1wk", "bars_per_group": 1, "bp_period": "max"},
-    "1ay":    {"base_interval": "1mo", "bars_per_group": 1, "bp_period": "max"},
+    "1sa":   {"base_interval": "1h",  "bars_per_group": 1,  "bp_period": "2y"},
+    "2sa":   {"base_interval": "1h",  "bars_per_group": 2,  "bp_period": "2y"},
+    "3sa":   {"base_interval": "1h",  "bars_per_group": 3,  "bp_period": "2y"},
+    "4sa":   {"base_interval": "1h",  "bars_per_group": 4,  "bp_period": "2y"},
+    "5sa":   {"base_interval": "1h",  "bars_per_group": 5,  "bp_period": "2y"},
+    "6sa":   {"base_interval": "1h",  "bars_per_group": 6,  "bp_period": "2y"},
+    "8sa":   {"base_interval": "1h",  "bars_per_group": 8,  "bp_period": "3y"},
+    "12sa":  {"base_interval": "1h",  "bars_per_group": 12, "bp_period": "3y"},
+    "13sa":  {"base_interval": "1h",  "bars_per_group": 13, "bp_period": "3y"},
+    "1gun":  {"base_interval": "1d",  "bars_per_group": 1,  "bp_period": "3y"},
+    "2gun":  {"base_interval": "1d",  "bars_per_group": 2,  "bp_period": "5y"},
+    "3gun":  {"base_interval": "1d",  "bars_per_group": 3,  "bp_period": "5y"},
+    "4gun":  {"base_interval": "1d",  "bars_per_group": 4,  "bp_period": "6y"},
+    "5gun":  {"base_interval": "1d",  "bars_per_group": 5,  "bp_period": "7y"},
+    "1hafta": {"base_interval": "1wk", "bars_per_group": 1, "bp_period": "max"},  # haftalık veri hafif, sorun değil
+    "1ay":    {"base_interval": "1mo", "bars_per_group": 1, "bp_period": "max"},  # aylık veri hafif, sorun değil
 }
+
+# Her seferde en fazla bu kadar hisse için TOPLU veri çekilir; büyük listeler
+# bu boyutta parçalara (batch) bölünür. Küçük tutmak bellek kullanımını
+# sınırlar ve ilerlemeyi (progress) düzenli aralıklarla güncelleyebilmeyi sağlar.
+BATCH_SIZE = 40
 
 
 def fetch_single_ohlc(symbol: str, base_interval: str, bp_period: str, is_index: bool) -> pd.DataFrame:
@@ -251,36 +261,53 @@ def _run_scan_worker(stock_symbols, selected_timeframes, index_symbol,
                     state["done"] = done
                 continue
 
-            # Hisselerin verisi TOPLU çekiliyor (tek/birkaç istek)
-            bulk_data = fetch_bulk_ohlc(stock_symbols, cfg["base_interval"], cfg["bp_period"])
+            # Hisseler KÜÇÜK GRUPLAR (batch) halinde çekiliyor - bellek taşmasını
+            # önlemek için tüm piyasayı tek seferde belleğe yüklemiyoruz.
+            for batch_start in range(0, len(stock_symbols), BATCH_SIZE):
+                batch = stock_symbols[batch_start: batch_start + BATCH_SIZE]
 
-            for stock in stock_symbols:
                 try:
-                    stock_ohlc = bulk_data.get(stock)
-                    if stock_ohlc is None or stock_ohlc.empty:
-                        raise ValueError("Toplu çekimde veri bulunamadı.")
-
-                    ratio = get_ratio_series_for_timeframe(stock_ohlc, index_ohlc, tf)
-                    n_bars = len(ratio)
-
-                    if n_bars < lrc_len:
-                        yetersiz_veri_sayisi += 1
-                    else:
-                        lrc = compute_lrc(ratio["high"], ratio["low"], lrc_len, lrc_len)
-                        last_bars_since = lrc["bars_since_cross"].iloc[-1] if len(lrc) else np.nan
-                        if (not np.isnan(last_bars_since)) and (last_bars_since < gerikontrol):
-                            kesisim_bulunanlar.append({
-                                "Hisse": stock,
-                                "Periyot": tf,
-                                "Son Kesişimden Bu Yana Bar": int(last_bars_since),
-                                "Toplam Bar (Çekilen Veri)": n_bars,
-                            })
+                    bulk_data = fetch_bulk_ohlc(batch, cfg["base_interval"], cfg["bp_period"])
                 except Exception as e:
-                    basarisiz_semboller.append((stock, tf, str(e)))
+                    for s in batch:
+                        basarisiz_semboller.append((s, tf, f"Toplu çekim hatası: {e}"))
+                        done += 1
+                    with state["lock"]:
+                        state["done"] = done
+                    continue
 
-                done += 1
+                for stock in batch:
+                    try:
+                        stock_ohlc = bulk_data.get(stock)
+                        if stock_ohlc is None or stock_ohlc.empty:
+                            raise ValueError("Toplu çekimde veri bulunamadı.")
+
+                        ratio = get_ratio_series_for_timeframe(stock_ohlc, index_ohlc, tf)
+                        n_bars = len(ratio)
+
+                        if n_bars < lrc_len:
+                            yetersiz_veri_sayisi += 1
+                        else:
+                            lrc = compute_lrc(ratio["high"], ratio["low"], lrc_len, lrc_len)
+                            last_bars_since = lrc["bars_since_cross"].iloc[-1] if len(lrc) else np.nan
+                            if (not np.isnan(last_bars_since)) and (last_bars_since < gerikontrol):
+                                kesisim_bulunanlar.append({
+                                    "Hisse": stock,
+                                    "Periyot": tf,
+                                    "Son Kesişimden Bu Yana Bar": int(last_bars_since),
+                                    "Toplam Bar (Çekilen Veri)": n_bars,
+                                })
+                    except Exception as e:
+                        basarisiz_semboller.append((stock, tf, str(e)))
+
+                    done += 1
+
                 with state["lock"]:
                     state["done"] = done
+
+                # Batch'ten kalan büyük veri yapılarını serbest bırak (RAM'i düşür)
+                del bulk_data
+                gc.collect()
 
         with state["lock"]:
             state["results"] = {
