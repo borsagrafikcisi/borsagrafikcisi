@@ -1,6 +1,3 @@
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 LRC KESİŞİM TEST SCRIPTI (tek sembol / oran)
 ----------------------------------------------------------
 Amaç: CRYPTOCAP:TOTAL3 / BINANCE:BTCUSDT.P oranını çekip, orijinal
@@ -13,8 +10,8 @@ Gereken kütüphaneler:
     pip install --upgrade --no-cache-dir git+https://github.com/rongardF/tvdatafeed.git
 """
 
-import numpy as np
-import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import ccxt
 from tvDatafeed import TvDatafeed, Interval
