@@ -6,4 +6,4 @@ plotly>=5.18
 borsapy
 matplotlib
 ccxt
-git+https://github.com/rongardF/tvdatafeed.git)
+git+https://github.com/rongardF/tvdatafeed.git
