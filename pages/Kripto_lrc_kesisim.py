@@ -1,14 +1,6 @@
-LRC KESİŞİM TEST SCRIPTI (tek sembol / oran)
-----------------------------------------------------------
-Amaç: CRYPTOCAP:TOTAL3 / BINANCE:BTCUSDT.P oranını çekip, orijinal
-Pine Script'teki LRC kesişim mantığını uygulayıp doğru sonuç verip
-vermediğini kontrol etmek. Bunu aynı sembolü TradingView'de açıp
-LRC kesişim (KESİŞME) etiketleriyle karşılaştırarak doğrulayabilirsin.
-
-Gereken kütüphaneler:
-    pip install ccxt --break-system-packages
-    pip install --upgrade --no-cache-dir git+https://github.com/rongardF/tvdatafeed.git
-
+import streamlit as st
+import numpy as np
+import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -17,29 +9,27 @@ from tvDatafeed import TvDatafeed, Interval
 
 
 # ==================== AYARLAR ====================
-# TradingView'deki "CRYPTOCAP:TOTAL3 / BINANCE:BTCUSDT.P" oranını test ediyoruz
 TV_SEMBOL = "TOTAL3"
 TV_EXCHANGE = "CRYPTOCAP"
-TV_INTERVAL = Interval.in_daily     # Pine'daki per = 'D' ile eşleşiyor
+TV_INTERVAL = Interval.in_daily
 
-BINANCE_SEMBOL = "BTC/USDT:USDT"    # ccxt formatı - BTCUSDT.P (perpetual futures)
+BINANCE_SEMBOL = "BTC/USDT:USDT"
 BINANCE_ZAMAN_DILIMI = "1d"
 
 BAR_SAYISI = 500
 
-# Pine Script'teki girdilerle birebir aynı
 LRC_LEN_HIGH = 300
 LRC_LEN_LOW = 300
-GERIKONTROL = 31                    # "TARANACAK BAR SAYISI"
+GERIKONTROL = 31
 
 
-# ==================== TA FONKSİYONLARI (Pine karşılıkları) ====================
+# ==================== TA FONKSIYONLARI ====================
 
-def ta_linreg(series: pd.Series, length: int, offset: int = 0) -> pd.Series:
+def ta_linreg(series, length, offset=0):
     result = pd.Series(index=series.index, dtype=float)
     x = np.arange(length)
     for i in range(length - 1, len(series)):
-        y = series.iloc[i - length + 1 : i + 1].values
+        y = series.iloc[i - length + 1: i + 1].values
         if np.isnan(y).any():
             continue
         slope, intercept = np.polyfit(x, y, 1)
@@ -47,24 +37,24 @@ def ta_linreg(series: pd.Series, length: int, offset: int = 0) -> pd.Series:
     return result
 
 
-def ta_dev(series: pd.Series, length: int) -> pd.Series:
+def ta_dev(series, length):
     def mad(window):
         return np.mean(np.abs(window - window.mean()))
     return series.rolling(length).apply(mad, raw=True)
 
 
-def ta_crossover(a: pd.Series, b: pd.Series) -> pd.Series:
+def ta_crossover(a, b):
     return (a > b) & (a.shift(1) <= b.shift(1))
 
 
-def ta_crossunder(a: pd.Series, b: pd.Series) -> pd.Series:
+def ta_crossunder(a, b):
     return (a < b) & (a.shift(1) >= b.shift(1))
 
 
-# ==================== VERİ ÇEKME ====================
+# ==================== VERI CEKME ====================
 
 def total3_veri_cek():
-    tv = TvDatafeed()  # girişsiz; sorun olursa TvDatafeed(kullanici, sifre) kullan
+    tv = TvDatafeed()
     df = tv.get_hist(symbol=TV_SEMBOL, exchange=TV_EXCHANGE, interval=TV_INTERVAL, n_bars=BAR_SAYISI)
     return df[["open", "high", "low", "close"]]
 
@@ -78,9 +68,7 @@ def btc_veri_cek():
     return df[["open", "high", "low", "close"]]
 
 
-def oran_serisi_olustur(total3_df: pd.DataFrame, btc_df: pd.DataFrame) -> pd.DataFrame:
-    """TradingView'in sembol oranı (A/B) hesaplama mantığıyla aynı:
-    high = highA/lowB, low = lowA/highB, close = closeA/closeB, open = openA/openB"""
+def oran_serisi_olustur(total3_df, btc_df):
     ortak = total3_df.join(btc_df, how="inner", lsuffix="_total3", rsuffix="_btc")
     oran = pd.DataFrame(index=ortak.index)
     oran["open"] = ortak["open_total3"] / ortak["open_btc"]
@@ -91,9 +79,7 @@ def oran_serisi_olustur(total3_df: pd.DataFrame, btc_df: pd.DataFrame) -> pd.Dat
     return oran
 
 
-# ==================== LRC KESİŞİM HESABI ====================
-
-def lrc_kesisim_hesapla(df: pd.DataFrame) -> pd.DataFrame:
+def lrc_kesisim_hesapla(df):
     out = df.copy()
     out["lrcHighReg"] = ta_linreg(out["high"], LRC_LEN_HIGH, 0)
     out["lrcLowReg"] = ta_linreg(out["low"], LRC_LEN_LOW, 0)
@@ -104,52 +90,59 @@ def lrc_kesisim_hesapla(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# ==================== ÇALIŞTIR ====================
+# ==================== STREAMLIT SAYFASI ====================
 
-if __name__ == "__main__":
-    print("TOTAL3 verisi çekiliyor (TradingView)...")
-    total3_df = total3_veri_cek()
-    print(f"  {len(total3_df)} bar alındı. Son tarih: {total3_df.index[-1]}")
+st.title("LRC Kesisim Test - TOTAL3 / BTCUSDT.P")
+st.caption("Pine Script'teki LRC kesisim mantiginin Python dogrulama testi")
 
-    print("BTCUSDT.P verisi çekiliyor (Binance Futures)...")
-    btc_df = btc_veri_cek()
-    print(f"  {len(btc_df)} bar alındı. Son tarih: {btc_df.index[-1]}")
+if st.button("Taramayi Calistir"):
+    with st.spinner("TOTAL3 verisi cekiliyor (TradingView)..."):
+        try:
+            total3_df = total3_veri_cek()
+            st.success(f"{len(total3_df)} bar alindi. Son tarih: {total3_df.index[-1]}")
+        except Exception as e:
+            st.error(f"TOTAL3 verisi cekilemedi: {e}")
+            st.stop()
 
-    print("Oran serisi oluşturuluyor: TOTAL3 / BTCUSDT.P ...")
+    with st.spinner("BTCUSDT.P verisi cekiliyor (Binance Futures)..."):
+        try:
+            btc_df = btc_veri_cek()
+            st.success(f"{len(btc_df)} bar alindi. Son tarih: {btc_df.index[-1]}")
+        except Exception as e:
+            st.error(f"BTC verisi cekilemedi: {e}")
+            st.stop()
+
     oran_df = oran_serisi_olustur(total3_df, btc_df)
-    print(f"  {len(oran_df)} ortak bar bulundu.")
+    st.write(f"Ortak bar sayisi: {len(oran_df)}")
 
-    print("LRC kesişim hesaplanıyor...")
     sonuc = lrc_kesisim_hesapla(oran_df)
 
-    # Son GERIKONTROL bar içindeki kesişimleri listele
     son_barlar = sonuc.tail(GERIKONTROL)
     kesisimler = son_barlar[son_barlar["crossover"] | son_barlar["crossunder"]]
 
-    print("\n" + "=" * 60)
+    st.subheader("Kesisim Sonuclari")
     if kesisimler.empty:
-        print(f"Son {GERIKONTROL} barda kesişim bulunamadı.")
+        st.info(f"Son {GERIKONTROL} barda kesisim bulunamadi.")
     else:
-        print(f"Son {GERIKONTROL} barda bulunan kesişimler:")
-        for tarih, satir in kesisimler.iterrows():
-            tur = "YUKARI (turuncu)" if satir["crossover"] else "AŞAĞI (yeşil)"
-            print(f"  {tarih.date()}  ->  KESİŞME {tur}   (LRC High: {satir['lrcHighReg']:.6f} | LRC Low: {satir['lrcLowReg']:.6f})")
+        gosterim = kesisimler.copy()
+        gosterim["yon"] = gosterim["crossover"].apply(lambda x: "YUKARI" if x else "ASAGI")
+        st.dataframe(gosterim[["yon", "lrcHighReg", "lrcLowReg"]])
 
-    # Son 5 barın LRC değerlerini de göster (TradingView ile karşılaştırma için)
-    print("\nSon 5 barın LRC değerleri (TradingView'deki LRC High/Low çizgileriyle karşılaştır):")
-    print(sonuc[["close", "lrcHighReg", "lrcLowReg"]].tail(5).to_string())
+    st.subheader("Son 5 Barin LRC Degerleri")
+    st.dataframe(sonuc[["close", "lrcHighReg", "lrcLowReg"]].tail(5))
 
-    # Grafik
+    st.subheader("Grafik")
     fig, ax = plt.subplots(figsize=(14, 7))
     ax.plot(sonuc.index, sonuc["lrcHighReg"], color="blue", linewidth=1.5, label="LRC High")
     ax.plot(sonuc.index, sonuc["lrcLowReg"], color="red", linewidth=1.5, label="LRC Low")
     up = sonuc[sonuc["crossover"]]
     down = sonuc[sonuc["crossunder"]]
-    ax.scatter(up.index, up["lrcHighReg"], color="orange", marker="^", s=100, zorder=5, label="KESİŞME (Yukarı)")
-    ax.scatter(down.index, down["lrcHighReg"], color="green", marker="v", s=100, zorder=5, label="KESİŞME (Aşağı)")
-    ax.set_title("TOTAL3 / BTCUSDT.P - LRC Kesişim Testi")
+    ax.scatter(up.index, up["lrcHighReg"], color="orange", marker="^", s=100, zorder=5, label="Kesisim Yukari")
+    ax.scatter(down.index, down["lrcHighReg"], color="green", marker="v", s=100, zorder=5, label="Kesisim Asagi")
+    ax.set_title("TOTAL3 / BTCUSDT.P - LRC Kesisim Testi")
     ax.legend()
     ax.grid(alpha=0.3)
     plt.tight_layout()
-    plt.savefig("/mnt/user-data/outputs/kesisim_test_grafik.png", dpi=150)
-    print("\nGrafik kaydedildi: kesisim_test_grafik.png")
+    st.pyplot(fig)
+else:
+    st.write("Taramayi baslatmak icin yukaridaki butona bas.")
