@@ -13,7 +13,7 @@ TV_SEMBOL = "TOTAL3"
 TV_EXCHANGE = "CRYPTOCAP"
 TV_INTERVAL = Interval.in_daily
 
-BINANCE_SEMBOL = "BTC/USDT:USDT"
+BINANCE_SEMBOL = "BTW/USDT:USDT"
 BINANCE_ZAMAN_DILIMI = "1d"
 
 BAR_SAYISI = 500
@@ -59,7 +59,7 @@ def total3_veri_cek():
     return df[["open", "high", "low", "close"]]
 
 
-def btc_veri_cek():
+def btw_veri_cek():
     exchange = ccxt.binanceusdm({"enableRateLimit": True})
     ohlcv = exchange.fetch_ohlcv(BINANCE_SEMBOL, timeframe=BINANCE_ZAMAN_DILIMI, limit=BAR_SAYISI)
     df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -68,13 +68,13 @@ def btc_veri_cek():
     return df[["open", "high", "low", "close"]]
 
 
-def oran_serisi_olustur(total3_df, btc_df):
-    ortak = total3_df.join(btc_df, how="inner", lsuffix="_total3", rsuffix="_btc")
+def oran_serisi_olustur(total3_df, btw_df):
+    ortak = total3_df.join(btw_df, how="inner", lsuffix="_total3", rsuffix="_btw")
     oran = pd.DataFrame(index=ortak.index)
-    oran["open"] = ortak["open_total3"] / ortak["open_btc"]
-    oran["high"] = ortak["high_total3"] / ortak["low_btc"]
-    oran["low"] = ortak["low_total3"] / ortak["high_btc"]
-    oran["close"] = ortak["close_total3"] / ortak["close_btc"]
+    oran["open"] = ortak["open_total3"] / ortak["open_btw"]
+    oran["high"] = ortak["high_total3"] / ortak["low_btw"]
+    oran["low"] = ortak["low_total3"] / ortak["high_btw"]
+    oran["close"] = ortak["close_total3"] / ortak["close_btw"]
     oran.dropna(inplace=True)
     return oran
 
@@ -92,7 +92,7 @@ def lrc_kesisim_hesapla(df):
 
 # ==================== STREAMLIT SAYFASI ====================
 
-st.title("LRC Kesisim Test - TOTAL3 / BTCUSDT.P")
+st.title("LRC Kesisim Test - TOTAL3 / BTWUSDT.P")
 st.caption("Pine Script'teki LRC kesisim mantiginin Python dogrulama testi")
 
 if st.button("Taramayi Calistir"):
@@ -104,15 +104,15 @@ if st.button("Taramayi Calistir"):
             st.error(f"TOTAL3 verisi cekilemedi: {e}")
             st.stop()
 
-    with st.spinner("BTCUSDT.P verisi cekiliyor (Binance Futures)..."):
+    with st.spinner("BTWUSDT.P verisi cekiliyor (Binance Futures)..."):
         try:
-            btc_df = btc_veri_cek()
-            st.success(f"{len(btc_df)} bar alindi. Son tarih: {btc_df.index[-1]}")
+            btw_df = btw_veri_cek()
+            st.success(f"{len(btw_df)} bar alindi. Son tarih: {btw_df.index[-1]}")
         except Exception as e:
-            st.error(f"BTC verisi cekilemedi: {e}")
+            st.error(f"BTW verisi cekilemedi: {e}")
             st.stop()
 
-    oran_df = oran_serisi_olustur(total3_df, btc_df)
+    oran_df = oran_serisi_olustur(total3_df, btw_df)
     st.write(f"Ortak bar sayisi: {len(oran_df)}")
 
     sonuc = lrc_kesisim_hesapla(oran_df)
@@ -139,7 +139,7 @@ if st.button("Taramayi Calistir"):
     down = sonuc[sonuc["crossunder"]]
     ax.scatter(up.index, up["lrcHighReg"], color="orange", marker="^", s=100, zorder=5, label="Kesisim Yukari")
     ax.scatter(down.index, down["lrcHighReg"], color="green", marker="v", s=100, zorder=5, label="Kesisim Asagi")
-    ax.set_title("TOTAL3 / BTCUSDT.P - LRC Kesisim Testi")
+    ax.set_title("TOTAL3 / BTWUSDT.P - LRC Kesisim Testi")
     ax.legend()
     ax.grid(alpha=0.3)
     plt.tight_layout()
