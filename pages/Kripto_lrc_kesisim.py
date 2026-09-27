@@ -8,7 +8,6 @@ LRC kesişim (KESİŞME) etiketleriyle karşılaştırarak doğrulayabilirsin.
 Gereken kütüphaneler:
     pip install ccxt --break-system-packages
     pip install --upgrade --no-cache-dir git+https://github.com/rongardF/tvdatafeed.git
-"""
 
 import matplotlib
 matplotlib.use("Agg")
