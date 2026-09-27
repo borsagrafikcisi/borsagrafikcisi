@@ -1,4 +1,6 @@
-"""
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 LRC KESİŞİM TEST SCRIPTI (tek sembol / oran)
 ----------------------------------------------------------
 Amaç: CRYPTOCAP:TOTAL3 / BINANCE:BTCUSDT.P oranını çekip, orijinal
