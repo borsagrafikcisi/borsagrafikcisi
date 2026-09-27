@@ -4,5 +4,6 @@ numpy>=1.24
 requests>=2.31
 plotly>=5.18
 borsapy
-matplotlib ccxt
+matplotlib
+ccxt
 git+https://github.com/rongardF/tvdatafeed.git)
