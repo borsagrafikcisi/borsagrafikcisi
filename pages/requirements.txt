@@ -1,1 +1,7 @@
 borsapy
+streamlit
+pandas
+numpy
+matplotlib
+ccxt
+git+https://github.com/rongardF/tvdatafeed.git
